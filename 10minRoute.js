@@ -1,8 +1,13 @@
 // =====================
+// 10minuteRoute.gs (READY TO PASTE)
+// Ten-minutes-or-less late heads-up
+// =====================
+
+
+// =====================
 // MODAL
 // =====================
 function buildTenMinLateConfirmModal_(payload) {
-
   return {
     type: 'modal',
     callback_id: 'ten_min_late_confirm',
@@ -15,8 +20,8 @@ function buildTenMinLateConfirmModal_(payload) {
         text: {
           type: 'mrkdwn',
           text:
-            `You’re about to notify the team that you will be *10 minutes or less late*.\n\n` +
-            `Click *Submit* to send, or *Cancel* to abort.`
+            'You’re about to notify the team that you will be *10 minutes or less late*.\n\n' +
+            'Click *Submit* to send, or *Cancel* to abort.'
         }
       }
     ]
@@ -25,62 +30,166 @@ function buildTenMinLateConfirmModal_(payload) {
 
 
 // =====================
-// QUEUE + WORKER
+// VIEW SUBMISSION HANDLER (HOT PATH)
 // =====================
-function enqueueTenMinLate_(cfg, item) {
+function handleTenMinLateSubmit_(cfg, payload) {
+  // keep it tiny + safe
+  const userId = payload?.user?.id || ''
+  const username = payload?.user?.username || payload?.user?.name || ''
+
+  // Minimal job payload
+  const job = {
+    ts: new Date().toISOString(),
+    userId,
+    username
+  }
+
+  // enqueue must be FAST
+  enqueueTenMinLateJob_(cfg, job)
+
+  // ensure worker exists (optional if you rely on masterWorker trigger)
+  // ensureWorkerTriggerOnce_('masterWorker', 'FLAG_MASTER_WORKER_SET_V1', 1)
+
+  return json_(200, { response_action: 'clear' })
+}
+
+
+// =====================
+// QUEUE (CacheService) — fast per-job keys
+// =====================
+// cfg.TEN_QUEUE_KEY is now the INDEX list key
+function enqueueTenMinLateJob_(cfg, job) {
   const cache = CacheService.getScriptCache()
-  const raw = cache.get(cfg.TEN_QUEUE_KEY)
-  const arr = raw ? JSON.parse(raw) : []
 
-  arr.push(item)
+  // A unique key per job
+  const jobKey = `${cfg.TEN_QUEUE_KEY}:JOB:${Date.now()}:${Math.random().toString(16).slice(2)}`
+  cache.put(jobKey, JSON.stringify(job), 21600)
 
-  cache.put(cfg.TEN_QUEUE_KEY, JSON.stringify(arr), 21600) // 6 hours
-  
+  // Maintain a small index list of job keys
+  const rawIndex = cache.get(cfg.TEN_QUEUE_KEY)
+  const index = rawIndex ? (safeJsonParse_(rawIndex) || []) : []
+  index.push(jobKey)
 
-    ensureWorkerTriggerOnce_(
-    'tenMinLateWorker',
-    cfg.TEN_WORKER_FLAG,
-    1
-  )
+  // guardrail: keep index from growing forever
+  const trimmed = index.length > 200 ? index.slice(index.length - 200) : index
 
+  cache.put(cfg.TEN_QUEUE_KEY, JSON.stringify(trimmed), 21600)
 }
 
 
 
-function tenMinLateWorker() {
-  const cfg = getConfig_()
-  debugLog_(cfg, 'tenMinLateWorker_', 'START')
-  const cache = CacheService.getScriptCache()
-  const raw = cache.get(cfg.TEN_QUEUE_KEY)
-  const arr = raw ? JSON.parse(raw) : []
-  if (!arr.length) return
+// =====================
+// VIEW SUBMISSION HANDLER (HOT PATH)
+// =====================
+function handleTenMinLateSubmit_(cfg, payload) {
+  // keep it tiny + safe
+  const userId = payload?.user?.id || ''
+  const username = payload?.user?.username || payload?.user?.name || ''
 
+  // Minimal job payload
+  const job = {
+    ts: new Date().toISOString(),
+    userId,
+    username
+  }
+
+  // enqueue must be FAST
+  enqueueTenMinLateJob_(cfg, job)
+
+  // ensure worker exists (optional if you rely on masterWorker trigger)
+  // ensureWorkerTriggerOnce_('masterWorker', 'FLAG_MASTER_WORKER_SET_V1', 1)
+
+  return json_(200, { response_action: 'clear' })
+}
+
+
+// =====================
+// QUEUE (CacheService) — fast per-job keys
+// =====================
+// cfg.TEN_QUEUE_KEY is now the INDEX list key
+function enqueueTenMinLateJob_(cfg, job) {
+  const cache = CacheService.getScriptCache()
+
+  // A unique key per job
+  const jobKey = `${cfg.TEN_QUEUE_KEY}:JOB:${Date.now()}:${Math.random().toString(16).slice(2)}`
+  cache.put(jobKey, JSON.stringify(job), 21600)
+
+  // Maintain a small index list of job keys
+  const rawIndex = cache.get(cfg.TEN_QUEUE_KEY)
+  const index = rawIndex ? (safeJsonParse_(rawIndex) || []) : []
+  index.push(jobKey)
+
+  // guardrail: keep index from growing forever
+  const trimmed = index.length > 200 ? index.slice(index.length - 200) : index
+
+  cache.put(cfg.TEN_QUEUE_KEY, JSON.stringify(trimmed), 21600)
+}
+
+
+
+// =====================
+// WORKER
+// =====================
+function tenMinLateWorker() {
+  if (isSlackHot_()) return
+  const cfg = getConfig_()
+
+  const cache = CacheService.getScriptCache()
+
+  // Drain index
+  const rawIndex = cache.get(cfg.TEN_QUEUE_KEY)
+  const index = rawIndex ? (safeJsonParse_(rawIndex) || []) : []
+  if (!index.length) return
+
+  // clear index first to avoid double-processing if worker overlaps
   cache.remove(cfg.TEN_QUEUE_KEY)
 
-  for (const item of arr) {
+  for (const jobKey of index) {
+    const rawJob = cache.get(jobKey)
+    cache.remove(jobKey) // remove immediately (at-least-once behavior)
+
+    if (!rawJob) continue
+    const job = safeJsonParse_(rawJob)
+    if (!job) continue
+
     try {
+      // Rebuild the old "item" shape only inside the worker
+      const item = {
+        type: 'TEN_MIN_LATE',
+        ts: job.ts,
+        user: {
+          id: job.userId || '',
+          username: job.username || '',
+          name: job.username || ''
+        }
+      }
+
       let rowNumber = ''
-      let meta = { name: '', email: '' }
 
       if (cfg.SHEET_URL) {
         rowNumber = appendTenMinLateToSheet_(cfg, item)
-        meta = getNameAndEmailFromResponsesRow_(cfg, rowNumber)
       }
+
+      let meta = { name: '', email: '' }
+      if (cfg.SHEET_URL && rowNumber) {
+        meta = getNameEmailAndSentColsFromRow_(cfg, rowNumber)
+      }
+
+      const who = meta.name || item?.user?.username || item?.user?.name || 'Employee'
 
       if (cfg.TEN_NOTIFY_CHANNEL) {
-        postTenMinLateToSlack_(cfg, item, meta.name)
+        postTenMinLateToSlack_(cfg, item, who)
       }
 
-      sendTenMinLateReceiptDm_(cfg, item, rowNumber, meta.name)
-
-      if (meta.email) {
-        sendTenMinLateEmailReceipt_(cfg, meta.email, item, rowNumber, meta.name)
-      }
+      sendTenMinLateReceiptDm_(cfg, item, rowNumber, who)
     } catch (err) {
-      //debugLog_(cfg, 'tenMinLateWorker', String(err && err.stack || err))
+      debugLog_(cfg, 'tenMinLateWorker', String(err && err.stack || err))
     }
   }
+
+  debugLog_(cfg, 'tenMinLateWorker', 'DONE processed=' + index.length)
 }
+
 
 
 
@@ -91,9 +200,9 @@ function appendTenMinLateToSheet_(cfg, item) {
   const ss = SpreadsheetApp.openByUrl(cfg.SHEET_URL)
   const sh = ss.getSheetByName(cfg.TEN_MIN_SHEET_NAME) || ss.insertSheet(cfg.TEN_MIN_SHEET_NAME)
 
-  // Ensure headers exist (A–F)
+  // Ensure headers exist
   if (sh.getLastRow() === 0) {
-    sh.appendRow(['Timestamp', 'User ID', 'User Name', 'Type', 'Real Name', 'Email'])
+    sh.appendRow(['Timestamp', 'User ID', 'User Name', 'Type', 'Real Name', 'Email', 'Receipt ID', 'Email Sent?', 'Email Sent At'])
   }
 
   // Find first empty row in column B (User ID column)
@@ -108,89 +217,83 @@ function appendTenMinLateToSheet_(cfg, item) {
   // If none empty found, append after last
   if (targetRow < startRow) targetRow = last + 1
 
-  // Write only A–D; formulas in E/F can populate based on B (User ID)
+  const u = item && item.user ? item.user : {}
+
+  // Write only A–D; formulas in E/F populate from User ID (B)
   sh.getRange(targetRow, 1, 1, 4).setValues([[
     new Date(),
-    item?.user?.id || '',
-    item?.user?.username || item?.user?.name || '',
-    item?.type || 'TEN_MIN_LATE'
+    u.id || '',
+    u.username || u.name || '',
+    (item && item.type) ? item.type : 'TEN_MIN_LATE'
   ]])
 
   return targetRow
 }
 
 
-function getNameAndEmailFromResponsesRow_(cfg, rowNumber) {
-  if (!cfg.SHEET_URL || !rowNumber) return { name: '', email: '' }
+// Read name/email from SAME row by HEADER names: "Real Name", "Email"
+// function getNameAndEmailFromResponsesRow_(cfg, rowNumber) {
+//   if (!cfg.SHEET_URL || !rowNumber) return { name: '', email: '' }
 
-  const ss = SpreadsheetApp.openByUrl(cfg.SHEET_URL)
-  const sh = ss.getSheetByName(cfg.TEN_MIN_SHEET_NAME)
-  if (!sh) return { name: '', email: '' }
+//   const ss = SpreadsheetApp.openByUrl(cfg.SHEET_URL)
+//   const sh = ss.getSheetByName(cfg.TEN_MIN_SHEET_NAME)
+//   if (!sh) return { name: '', email: '' }
 
-  // Give formulas a moment to populate (if E/F are formula-driven)
-  SpreadsheetApp.flush()
+//   const lastCol = sh.getLastColumn()
+//   if (lastCol < 1) return { name: '', email: '' }
 
-  // Columns: E=5, F=6
-  // Read E:F from the row
-  let name = ''
-  let email = ''
+//   const headers = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(h => String(h || '').trim())
+//   const nameCol = headers.indexOf('Real Name') + 1
+//   const emailCol = headers.indexOf('Email') + 1
 
-  // Try a couple times in case formulas recalc slightly after flush
-  for (let i = 0; i < 3; i++) {
-    const vals = sh.getRange(rowNumber, 5, 1, 2).getValues()[0] // [E, F]
-    name = String(vals[0] || '').trim()
-    email = String(vals[1] || '').trim()
+//   if (nameCol < 1 || emailCol < 1) {
+//     debugLog_(cfg, 'getNameAndEmailFromResponsesRow_', 'Missing headers. nameCol=' + nameCol + ' emailCol=' + emailCol)
+//     return { name: '', email: '' }
+//   }
 
-    if (name || email) break
-    Utilities.sleep(250)
-    SpreadsheetApp.flush()
-  }
+//   SpreadsheetApp.flush()
 
-  return { name, email }
-}
+//   let name = ''
+//   let email = ''
 
+//   for (let i = 0; i < 5; i++) {
+//     name = String(sh.getRange(rowNumber, nameCol).getValue() || '').trim()
+//     email = String(sh.getRange(rowNumber, emailCol).getValue() || '').trim()
 
-function handleTenMinLateSubmit_(cfg, payload) {
-  const user = payload.user || {}
+//     if (name || email) break
+//     Utilities.sleep(250)
+//     SpreadsheetApp.flush()
+//   }
 
-  const item = {
-    type: 'TEN_MIN_LATE',
-    ts: new Date().toISOString(),
-    user: {
-      id: user.id || '',
-      username: user.username || '',
-      name: user.name || ''
-    }
-  }
-
-  enqueueTenMinLate_(cfg, item)
-
-  // closes modal immediately
-  return json_(200, { response_action: 'clear' })
-}
+//   return { name: name, email: email }
+// }
 
 
 // =====================
-// SLACK NOTIFY + DM
+// SLACK NOTIFY + DM RECEIPT
 // =====================
 function postTenMinLateToSlack_(cfg, item, displayName) {
-  const fallback = item?.user?.username || item?.user?.name || 'Employee'
+  const u = item && item.user ? item.user : {}
+  const fallback = u.username || u.name || 'Employee'
   const who = (displayName && String(displayName).trim()) ? String(displayName).trim() : fallback
 
   const text =
-    `:alarm_clock:\n` +
-    `• *Who:* ${who}\n`
+    ':alarm_clock:\n' +
+    '*Late Heads-up (≤ 10 minutes)*\n' +
+    '• *Who:* ' + who
 
   const res = slackApi_(cfg, 'chat.postMessage', {
     channel: cfg.TEN_NOTIFY_CHANNEL,
-    text
+    text: text
   })
 
-  debugLog_(cfg, 'postTenMinLateToSlack_', `channel=${cfg.TEN_NOTIFY_CHANNEL} res=${JSON.stringify(res || {})}`)
+  debugLog_(cfg, 'postTenMinLateToSlack_', 'channel=' + cfg.TEN_NOTIFY_CHANNEL + ' res=' + JSON.stringify(res || {}))
 }
 
 function sendTenMinLateReceiptDm_(cfg, item, sheetRowNumber, displayName) {
-  const userId = item?.user?.id || ''
+  const u = item && item.user ? item.user : {}
+  const userId = u.id || ''
+
   if (!userId) {
     debugLog_(cfg, 'sendTenMinLateReceiptDm_', 'ABORT missing userId')
     return
@@ -202,101 +305,113 @@ function sendTenMinLateReceiptDm_(cfg, item, sheetRowNumber, displayName) {
   debugLog_(cfg, 'sendTenMinLateReceiptDm_', 'OPEN ' + JSON.stringify(open || {}))
   if (!open || !open.ok) return
 
-  const channelId = open?.channel?.id || ''
+  const channelId = open.channel && open.channel.id ? open.channel.id : ''
   if (!channelId) {
     debugLog_(cfg, 'sendTenMinLateReceiptDm_', 'OPEN_NO_CHANNEL_ID')
     return
   }
 
-  const post = slackApi_(cfg, 'chat.postMessage', { channel: channelId, text })
+  const post = slackApi_(cfg, 'chat.postMessage', { channel: channelId, text: text })
   debugLog_(cfg, 'sendTenMinLateReceiptDm_', 'POST ' + JSON.stringify(post || {}))
 }
 
 function buildTenMinLateReceiptDmText_(item, sheetRowNumber, displayName) {
-   const fallback = item?.user?.username || item?.user?.name || 'You'
-   const who = (displayName && String(displayName).trim()) ? String(displayName).trim() : fallback
+  const u = item && item.user ? item.user : {}
+  const fallback = u.username || u.name || 'You'
+  const who = (displayName && String(displayName).trim()) ? String(displayName).trim() : fallback
 
   const lines = [
     '✅ *10 minutes or less late heads-up sent*',
-    `• *Who:* ${who}`,
+    '• *Who:* ' + who
   ]
 
-  if (sheetRowNumber) lines.push(`• *Receipt ID:* Row ${sheetRowNumber}`)
+  if (sheetRowNumber) lines.push('• *Receipt ID:* Row ' + sheetRowNumber)
   lines.push('\nIf anything looks wrong, message in your coach channel.')
 
   return lines.join('\n')
 }
 
 
-
 // =====================
 // EMAIL RECEIPT TO USER
 // =====================
-
 // function sendTenMinLateEmailReceipt_(cfg, toEmail, item, rowNumber, displayName) {
 //   const email = String(toEmail || '').trim()
 //   if (!email) return
 
-//   const fallback = item?.user?.username || item?.user?.name || 'You'
+//   const u = item && item.user ? item.user : {}
+//   const fallback = u.username || u.name || 'You'
 //   const who = (displayName && String(displayName).trim()) ? String(displayName).trim() : fallback
 
-//   const subject = `${cfg.EMAIL_SUBJECT_PREFIX || 'Late Heads-up Receipt'}`
+//   const subject = (cfg.EMAIL_SUBJECT_PREFIX)
+//     ? (cfg.EMAIL_SUBJECT_PREFIX + ' — Late Heads-up')
+//     : 'Late Heads-up Receipt'
+
 //   const body =
-//     `Late Heads-up Sent\n\n` +
-//     `Who: ${who}\n` +
-//     `ETA: 10 minutes or less\n` +
-//     (rowNumber ? `Receipt ID: Row ${rowNumber}\n` : '') +
-//     `\nIf anything looks wrong, reply in your coach channel.`
+//     'Late Heads-up Sent\n\n' +
+//     'Who: ' + who + '\n' +
+//     'ETA: 10 minutes or less\n' +
+//     (rowNumber ? ('Receipt ID: Row ' + rowNumber + '\n') : '') +
+//     '\nIf anything looks wrong, message in your coach channel.'
 
 //   try {
-//     MailApp.sendEmail({
-//       to: email,
-//       subject,
-//       body
-//     })
-//     debugLog_(cfg, 'sendTenMinLateEmailReceipt_', `SENT to=${email}`)
+//     // NOTE: MailApp does NOT support {from: alias}. Use GmailApp if you need alias sending.
+//     MailApp.sendEmail(email, subject, body)
+//     debugLog_(cfg, 'sendTenMinLateEmailReceipt_', 'SENT to=' + email)
 //   } catch (err) {
-//     debugLog_(cfg, 'sendTenMinLateEmailReceipt_', `ERROR to=${email} err=${String(err && err.stack || err)}`)
+//     debugLog_(cfg, 'sendTenMinLateEmailReceipt_', 'ERROR to=' + email + ' err=' + String(err && err.stack || err))
 //   }
 // }
 
+function sweepTenMinEmails() {
+  if (isSlackHot_()) return
+  const cfg = getConfig_()
+  const ss = SpreadsheetApp.openByUrl(cfg.SHEET_URL)
+  const sh = ss.getSheetByName(cfg.TEN_MIN_SHEET_NAME)
+  if (!sh) return
 
+  const lastRow = sh.getLastRow()
+  const lastCol = sh.getLastColumn()
+  if (lastRow < 2) return
 
+  const headers = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(h => String(h || '').trim())
+  const nameCol = headers.indexOf('Real Name') + 1
+  const emailCol = headers.indexOf('Email') + 1
+  const sentCol = headers.indexOf('Email Sent?') + 1
 
-// =====================
-// EMAIL RECEIPTS
-// =====================
-// function sendSubmitReceiptEmails_(it, d, userEmailOverride) {
-//   const dbg = getDebugSheet_()
+  if (emailCol < 1 || sentCol < 1) {
+    debugLog_(cfg, 'sweepTenMinEmails', 'Missing Email or Email Sent? headers')
+    return
+  }
 
-//   const userId = String(it.user || '').trim()
-//   if (!userId) {
-//     dbg.appendRow([new Date(), 'sendSubmitReceiptEmails_', 'ABORT missing userId'])
-//     return
-//   }
+  const values = sh.getRange(2, 1, lastRow - 1, lastCol).getValues()
 
-//   const userEmail = String(userEmailOverride || getSlackEmailByUserId_(userId) || '').trim()
-//   if (!userEmail) {
-//     dbg.appendRow([new Date(), 'sendSubmitReceiptEmails_', `ABORT no email for ${userId}`])
-//     return
-//   }
+  for (let i = 0; i < values.length; i++) {
+    const rowIdx = i + 2
+    const email = String(values[i][emailCol - 1] || '').trim()
+    const sent = String(values[i][sentCol - 1] || '').trim().toLowerCase()
 
-//   const subject = buildReceiptSubject_(it, d)
-//   const htmlBody = buildReceiptHtml_(it, d, userEmail)
-//   const textBody = buildReceiptText_(it, d, userEmail)
+    if (!email) continue
+    if (sent === 'yes' || sent === 'true' || sent === 'sent') continue
 
-//   safeSendEmail_({ to: userEmail, subject, htmlBody, textBody }, dbg)
+    const who = nameCol > 0 ? String(values[i][nameCol - 1] || '').trim() : ''
 
-//   if (CFG.ADMIN_EMAILS && CFG.ADMIN_EMAILS.length) {
-//     safeSendEmail_({
-//       to: CFG.ADMIN_EMAILS.join(','),
-//       subject: '[ADMIN COPY] ' + subject,
-//       htmlBody,
-//       textBody
-//     }, dbg)
-//   }
+    // You may not have the original item payload here, so send a generic receipt
+    try {
+      MailApp.sendEmail(
+        email,
+        (cfg.EMAIL_SUBJECT_PREFIX ? cfg.EMAIL_SUBJECT_PREFIX + ' — Late Heads-up' : 'Late Heads-up Receipt'),
+        'Late Heads-up Sent\n\n' +
+        (who ? ('Who: ' + who + '\n') : '') +
+        'ETA: 10 minutes or less\n' +
+        'Receipt ID: Row ' + rowIdx + '\n'
+      )
 
-//   dbg.appendRow([new Date(), 'sendSubmitReceiptEmails_', 'SENT', userEmail, (CFG.ADMIN_EMAILS || []).join(',')])
-// }
-
-
+      sh.getRange(rowIdx, sentCol).setValue('YES')
+      const sentAtCol = headers.indexOf('Email Sent At') + 1
+      if (sentAtCol > 0) sh.getRange(rowIdx, sentAtCol).setValue(new Date())
+    } catch (err) {
+      debugLog_(cfg, 'sweepTenMinEmails_', 'Row ' + rowIdx + ' email failed: ' + String(err && err.message || err))
+    }
+  }
+}

@@ -2,96 +2,89 @@
 // VIEW SUBMISSION HANDLER
 // =====================
 function handleFutureViewSubmission_(cfg, payload) {
-  const cb = payload.view?.callback_id || ''
+  
+    const cb = payload?.view?.callback_id || ''
 
-  // Back button is a block_action, not view_submission
-  // But if you ever handle it here, keep this stub:
-  // if (cb === 'future_timeoff_back') ...
+    if (cb === 'timeoff_step1') {
+      const prevMeta = safeJsonParse_(payload?.view?.private_metadata) || {}
+      const step1 = parseStep1State_(payload?.view?.state?.values || {})
+      const errors = validateStep1_(step1)
+      if (errors) return json_(200, { response_action: 'errors', errors })
 
-  if (cb === 'timeoff_step1') {
-    const prevMeta = safeJsonParse_(payload.view?.private_metadata) || {}
-    const step1 = parseStep1State_(payload.view?.state?.values || {})
-    const errors = validateStep1_(step1)
-    if (errors) return json_(200, { response_action: 'errors', errors })
+      const apInfo = computeApEligibility_(cfg, step1.startDate, step1.isApRequest)
 
-    const apInfo = computeApEligibility_(cfg, step1.startDate, step1.isApRequest)
+      const meta = {
+        ...prevMeta,
+        userId: payload?.user?.id || '',
+        step1,
+        apInfo
+      }
 
-    const meta = {
-      ...prevMeta,
-      userId: payload.user?.id || '',
-      step1,
-      apInfo
+      if (step1.isApRequest === 'yes' && apInfo.apEligible === true) {
+        return json_(200, { response_action: 'update', view: buildApModal_({ cfg, privateMeta: meta }) })
+      }
+
+      return json_(200, { response_action: 'update', view: buildPtoModal_({ privateMeta: meta }) })
     }
 
-    if (step1.isApRequest === 'yes' && apInfo.apEligible === true) {
-      return json_(200, { response_action: 'update', view: buildApModal_({ cfg, privateMeta: meta }) })
+    if (cb === 'timeoff_pto') {
+      const meta = safeJsonParse_(payload?.view?.private_metadata) || {}
+      const step1 = meta.step1 || {}
+      const apInfo = meta.apInfo || {}
+      const pto = parsePtoState_(payload?.view?.state?.values || {})
+
+      const combined = {
+        requestKind: 'PTO',
+        slackUserId: payload?.user?.id || '',
+        slackUserName: payload?.user?.username || payload?.user?.name || '',
+        startDate: step1.startDate || '',
+        startTime: step1.startTime || '',
+        endDate: step1.endDate || '',
+        endTime: step1.endTime || '',
+        isApRequest: step1.isApRequest || 'no',
+        apEligible: apInfo.apEligible ? 'yes' : 'no',
+        apDaysUntilStart: String(apInfo.daysUntilStart ?? ''),
+        offsiteAssignment: pto.offsiteAssignment || '',
+        coverageNeeded: (pto.coverageNeeded || []).join(', '),
+        hasSubPlans: pto.hasSubPlans || '',
+        subPlansLink: pto.subPlansLink || '',
+        notes: pto.notes || ''
+      }
+
+      const errors = validatePto_(combined, pto)
+      if (errors) return json_(200, { response_action: 'errors', errors })
+
+      enqueueFutureTimeOff_(cfg, payload, combined)
+      return json_(200, { response_action: 'clear' })
     }
 
-    return json_(200, { response_action: 'update', view: buildPtoModal_({ privateMeta: meta }) })
-  }
+    if (cb === 'timeoff_ap') {
+      const meta = safeJsonParse_(payload?.view?.private_metadata) || {}
+      const step1 = meta.step1 || {}
+      const apInfo = meta.apInfo || {}
 
-  if (cb === 'timeoff_pto') {
-    const meta = safeJsonParse_(payload.view?.private_metadata) || {}
-    const step1 = meta.step1 || {}
-    const apInfo = meta.apInfo || {}
-    const pto = parsePtoState_(payload.view?.state?.values || {})
+      const combined = {
+        requestKind: 'AP',
+        slackUserId: payload?.user?.id || '',
+        slackUserName: payload?.user?.username || payload?.user?.name || '',
+        startDate: step1.startDate || '',
+        startTime: step1.startTime || '',
+        endDate: step1.endDate || '',
+        endTime: step1.endTime || '',
+        isApRequest: 'yes',
+        apEligible: apInfo.apEligible ? 'yes' : 'no',
+        apDaysUntilStart: String(apInfo.daysUntilStart ?? ''),
+        apApprovalUrl: cfg.AP_APPROVAL_URL || ''
+      }
 
-    const combined = {
-      requestKind: 'PTO',
-      slackUserId: payload.user?.id || '',
-      slackUserName: payload.user?.username || payload.user?.name || '',
-
-      startDate: step1.startDate || '',
-      startTime: step1.startTime || '',
-      endDate: step1.endDate || '',
-      endTime: step1.endTime || '',
-
-      isApRequest: step1.isApRequest || 'no',
-      apEligible: apInfo.apEligible ? 'yes' : 'no',
-      apDaysUntilStart: String(apInfo.daysUntilStart ?? ''),
-
-      offsiteAssignment: pto.offsiteAssignment || '',
-      coverageNeeded: (pto.coverageNeeded || []).join(', '),
-      hasSubPlans: pto.hasSubPlans || '',
-      subPlansLink: pto.subPlansLink || '',
-      notes: pto.notes || ''
+      enqueueFutureTimeOff_(cfg, payload, combined)
+      return json_(200, { response_action: 'clear' })
     }
 
-    const errors = validatePto_(combined, pto)
-    if (errors) return json_(200, { response_action: 'errors', errors })
-
-    enqueueFutureTimeOff_(cfg, payload, combined)
     return json_(200, { response_action: 'clear' })
-  }
 
-  if (cb === 'timeoff_ap') {
-    const meta = safeJsonParse_(payload.view?.private_metadata) || {}
-    const step1 = meta.step1 || {}
-    const apInfo = meta.apInfo || {}
-
-    const combined = {
-      requestKind: 'AP',
-      slackUserId: payload.user?.id || '',
-      slackUserName: payload.user?.username || payload.user?.name || '',
-
-      startDate: step1.startDate || '',
-      startTime: step1.startTime || '',
-      endDate: step1.endDate || '',
-      endTime: step1.endTime || '',
-
-      isApRequest: 'yes',
-      apEligible: apInfo.apEligible ? 'yes' : 'no',
-      apDaysUntilStart: String(apInfo.daysUntilStart ?? ''),
-
-      apApprovalUrl: cfg.AP_APPROVAL_URL || '' // only if you add this to getConfig_
-    }
-
-    enqueueFutureTimeOff_(cfg, payload, combined)
-    return json_(200, { response_action: 'clear' })
-  }
-
-  return json_(200, { response_action: 'clear' })
 }
+
 
 
 // =====================
@@ -120,13 +113,6 @@ function handleBackButton_(cfg, payload) {
 function opt_(text, value) {
   return {
     text: { type: 'plain_text', text: text },
-    value: String(value)
-  }
-}
-
-function makeOption(text, value) {
-  return {
-    text: { type: 'plain_text', text },
     value: String(value)
   }
 }
@@ -209,6 +195,10 @@ function buildTimeOffModalStep1_(opts) {
   const meta = opts?.privateMeta || {}
   const step1 = meta.step1 || {}
 
+
+  const hours = buildHourOptions_(6, 18) // 06–18
+  const mins = buildMinuteOptions_()  // 00–59
+
   return {
     type: 'modal',
     callback_id: 'timeoff_step1',
@@ -236,8 +226,8 @@ function buildTimeOffModalStep1_(opts) {
     type: 'static_select',
     action_id: 'start_hour',
     placeholder: { type: 'plain_text', text: 'Hour' },
-    options: hourOptions_(),
-    ...(step1.startHour ? { initial_option: findOption_(hourOptions_(), step1.startHour) } : {})
+    options: hours,
+    ...(step1.startHour ? { initial_option: findOption_(hours, step1.startHour) } : {})
   }
 },
 {
@@ -248,20 +238,8 @@ function buildTimeOffModalStep1_(opts) {
     type: 'static_select',
     action_id: 'start_min',
     placeholder: { type: 'plain_text', text: 'Minute' },
-    options: minuteOptions_(),
-    ...(step1.startMin ? { initial_option: findOption_(minuteOptions_(), step1.startMin) } : {})
-  }
-},
-{
-  type: 'input',
-  block_id: 'start_ampm_blk',
-  label: { type: 'plain_text', text: 'Start AM/PM' },
-  element: {
-    type: 'static_select',
-    action_id: 'start_ampm',
-    placeholder: { type: 'plain_text', text: 'AM / PM' },
-    options: ampmOptions_(),
-    ...(step1.startAmPm ? { initial_option: findOption_(ampmOptions_(), step1.startAmPm) } : {})
+    options: mins,
+    ...(step1.startMin ? { initial_option: findOption_(mins, step1.startMin) } : {})
   }
 },
 
@@ -285,8 +263,8 @@ function buildTimeOffModalStep1_(opts) {
     type: 'static_select',
     action_id: 'end_hour',
     placeholder: { type: 'plain_text', text: 'Hour' },
-    options: hourOptions_(),
-    ...(step1.endHour ? { initial_option: findOption_(hourOptions_(), step1.endHour) } : {})
+    options: hours,
+    ...(step1.endHour ? { initial_option: findOption_(hours, step1.endHour) } : {})
   }
 },
 {
@@ -297,20 +275,8 @@ function buildTimeOffModalStep1_(opts) {
     type: 'static_select',
     action_id: 'end_min',
     placeholder: { type: 'plain_text', text: 'Minute' },
-    options: minuteOptions_(),
-    ...(step1.endMin ? { initial_option: findOption_(minuteOptions_(), step1.endMin) } : {})
-  }
-},
-{
-  type: 'input',
-  block_id: 'end_ampm_blk',
-  label: { type: 'plain_text', text: 'End AM/PM' },
-  element: {
-    type: 'static_select',
-    action_id: 'end_ampm',
-    placeholder: { type: 'plain_text', text: 'AM / PM' },
-    options: ampmOptions_(),
-    ...(step1.endAmPm ? { initial_option: findOption_(ampmOptions_(), step1.endAmPm) } : {})
+    options: mins,
+    ...(step1.endMin ? { initial_option: findOption_(mins, step1.endMin) } : {})
   }
 },
 
@@ -550,11 +516,9 @@ function parseStep1State_(values) {
 
   const startHour = pick('start_hour_blk', 'start_hour')?.selected_option?.value || ''
   const startMin = pick('start_min_blk', 'start_min')?.selected_option?.value || ''
-  const startAmPm = pick('start_ampm_blk', 'start_ampm')?.selected_option?.value || ''
 
   const endHour = pick('end_hour_blk', 'end_hour')?.selected_option?.value || ''
   const endMin = pick('end_min_blk', 'end_min')?.selected_option?.value || ''
-  const endAmPm = pick('end_ampm_blk', 'end_ampm')?.selected_option?.value || ''
 
   return {
     startDate: pick('start_date_blk', 'start_date')?.selected_date || '',
@@ -563,14 +527,12 @@ function parseStep1State_(values) {
     // store pieces so we can repopulate dropdowns on Back
     startHour,
     startMin,
-    startAmPm,
     endHour,
     endMin,
-    endAmPm,
 
     // store canonical 24h strings for downstream logic/sheet
-    startTime: to24h_(startHour, startMin, startAmPm),
-    endTime: to24h_(endHour, endMin, endAmPm),
+    startTime: startHour, startMin,
+    endTime: endHour, endMin,
 
     isApRequest: pick('ap_blk', 'is_ap_request')?.selected_option?.value || ''
   }
@@ -592,24 +554,7 @@ function parsePtoState_(values) {
   }
 }
 
-function parseApState_(values) {
-  const sections = []
 
-  for (let i = 1; i <= 6; i++) {
-    const itemBlock = `ap_cov_item_${i}_blk`
-    const itemAction = `ap_cov_item_${i}`
-    const planBlock = `ap_cov_plan_${i}_blk`
-    const planAction = `ap_cov_plan_${i}`
-
-    const selected = values?.[itemBlock]?.[itemAction]?.selected_options || []
-    const coverage = selected.map(o => o.value)
-    const plan = values?.[planBlock]?.[planAction]?.value || ''
-
-    sections.push({ index: i, coverage, plan })
-  }
-
-  return { sections }
-}
 
 function validateStep1_(step1) {
   const errors = {}
@@ -619,11 +564,11 @@ function validateStep1_(step1) {
 
   if (!step1.startHour) errors['start_hour_blk'] = 'Pick an hour'
   if (!step1.startMin) errors['start_min_blk'] = 'Pick minutes'
-  if (!step1.startAmPm) errors['start_ampm_blk'] = 'Pick AM or PM'
+
 
   if (!step1.endHour) errors['end_hour_blk'] = 'Pick an hour'
   if (!step1.endMin) errors['end_min_blk'] = 'Pick minutes'
-  if (!step1.endAmPm) errors['end_ampm_blk'] = 'Pick AM or PM'
+
 
   if (!step1.startTime) errors['start_hour_blk'] = 'Invalid start time'
   if (!step1.endTime) errors['end_hour_blk'] = 'Invalid end time'
@@ -648,26 +593,6 @@ function validatePto_(combined, ptoRaw) {
   return Object.keys(errors).length ? errors : null
 }
 
-function validateAp_(apRaw) {
-  const errors = {}
-  const sections = apRaw?.sections || []
-  const s1 = sections[0] || { coverage: [], plan: '' }
-
-  if (!s1.coverage || !s1.coverage.length) errors['ap_cov_item_1_blk'] = 'Please select at least one coverage item'
-  if (!String(s1.plan || '').trim()) errors['ap_cov_plan_1_blk'] = 'Please provide a coverage plan'
-
-  for (let i = 2; i <= 6; i++) {
-    const s = sections[i - 1] || { coverage: [], plan: '' }
-    const hasAny = (s.coverage && s.coverage.length) || String(s.plan || '').trim()
-
-    if (hasAny) {
-      if (!s.coverage || !s.coverage.length) errors[`ap_cov_item_${i}_blk`] = 'Select at least one coverage item (or clear this section)'
-      if (!String(s.plan || '').trim()) errors[`ap_cov_plan_${i}_blk`] = 'Provide a plan (or clear this section)'
-    }
-  }
-
-  return Object.keys(errors).length ? errors : null
-}
 
 function computeApEligibility_(cfg, startDateStr, isApRequest) {
   if (isApRequest !== 'yes') return { apEligible: true, daysUntilStart: null }
@@ -709,679 +634,290 @@ function safeJsonParse_(s) {
 // QUEUE (no Sheets writes in doPost)
 // =====================
 function enqueueFutureTimeOff_(cfg, payload, combined) {
+  const props = PropertiesService.getScriptProperties()
+
   const item = {
     receivedAt: new Date().toISOString(),
-    user: combined.slackUserId || payload.user?.id || '',
-    userName: combined.slackUserName || payload.user?.username || payload.user?.name || '',
+    user: combined.slackUserId || payload?.user?.id || '',
+    userName: combined.slackUserName || payload?.user?.username || payload?.user?.name || '',
     data: combined
   }
 
-  const props = PropertiesService.getScriptProperties()
   const raw = props.getProperty(cfg.FUTURE_QUEUE_PROP_KEY)
   const arr = raw ? JSON.parse(raw) : []
   arr.push(item)
   props.setProperty(cfg.FUTURE_QUEUE_PROP_KEY, JSON.stringify(arr))
-
-  ensureFutureFlushTrigger_(cfg)
-}
-
-function ensureFutureFlushTrigger_(cfg) {
-  const props = PropertiesService.getScriptProperties()
-  const alreadySet = props.getProperty(cfg.FUTURE_FLUSH_TRIGGER_PROP_KEY)
-  if (alreadySet === '1') return
-
-  // delete any old triggers for this worker
-  ScriptApp.getProjectTriggers().forEach(t => {
-    if (t.getHandlerFunction && t.getHandlerFunction() === 'flushFutureTimeOffQueue_') {
-      ScriptApp.deleteTrigger(t)
-    }
-  })
-
-  ScriptApp.newTrigger('flushFutureTimeOffQueue_')
-    .timeBased()
-    .after((cfg.FUTURE_FLUSH_TRIGGER_DELAY_SECONDS || 30) * 1000)
-    .create()
-
-  props.setProperty(cfg.FUTURE_FLUSH_TRIGGER_PROP_KEY, '1')
 }
 
 
+function flushFutureTimeOffQueueCentral_() {
+  if (isSlackHot_()) return
 
-function parseSlackPayload_(e) {
-  const raw = e?.parameter?.payload
-  if (!raw) return null
-  return JSON.parse(raw)
-}
-
-function getSlackEmailByUserId_(cfg, userId) {
-  if (!userId) return ''
-
-  const res = UrlFetchApp.fetch('https://slack.com/api/users.info?user=' + encodeURIComponent(userId), {
-    method: 'get',
-    headers: { Authorization: `Bearer ${cfg.SLACK_BOT_TOKEN}` },
-    muteHttpExceptions: true
-  })
-
-  const data = JSON.parse(res.getContentText() || '{}')
-  if (!data.ok) return ''
-
-  return data.user?.profile?.email || ''
-}
-
-function getOrCreateSheet_(ss, name) {
-  return ss.getSheetByName(name) || ss.insertSheet(name)
-}
-
-function getOrCreateDebugSheet_(cfg) {
-  const ss = SpreadsheetApp.openById(cfg.SHEET_ID)
-  return getOrCreateSheet_(ss, cfg.DEBUG_SHEET_NAME)
-}
-
-function getDebugSheet_(cfg) {
-  const ss = SpreadsheetApp.openById(cfg.SHEET_ID)
-  return getOrCreateSheet_(ss, cfg.DEBUG_SHEET_NAME)
-}
-
-// =====================
-// Slack channel alert (dynamic channel)
-// =====================
-function sendSlackChannelAlert_(cfg, channelId, text) {
-  const dbg = getOrCreateDebugSheet_(cfg)
-
-  if (!channelId) {
-    dbg.appendRow([new Date(), 'sendSlackChannelAlert_', 'ABORT missing NOTIFY_CHANNEL_ID'])
-    return
-  }
-
-  const res = slackApi_(cfg, 'chat.postMessage', {
-    channel: channelId,
-    text
-  })
-
-  if (!res || !res.ok) {
-    dbg.appendRow([new Date(), 'sendSlackChannelAlert_', 'FAIL', channelId, JSON.stringify(res || {})])
-    return
-  }
-
-  dbg.appendRow([new Date(), 'sendSlackChannelAlert_', 'SENT', channelId, res.ts || ''])
-}
-
-function formatAlertText_(it, d, sheetRowNumber) {
-  const who = it.userName ? `@${it.userName}` : (it.user || 'Unknown user')
-
-  const whenBits = [
-    d.startDate ? `${d.startDate}${d.startTime ? ` ${d.startTime}` : ''}` : '',
-    d.endDate ? `${d.endDate}${d.endTime ? ` ${d.endTime}` : ''}` : ''
-  ].filter(Boolean)
-
-  const lines = [
-    d.requestKind === 'AP' ? '🚨 *New AP Request*' : '🚨 *New PTO Request*',
-    `*From:* ${who}`,
-    whenBits.length ? `*When:* ${whenBits.join(' → ')}` : null,
-    `*AP request:* ${d.isApRequest || 'no'} (eligible: ${d.apEligible || 'n/a'})`,
-    d.requestKind === 'PTO' ? `*Off-site assignment:* ${d.offsiteAssignment || ''}` : null,
-    d.requestKind === 'PTO' ? (d.coverageNeeded ? `*Coverage:* ${d.coverageNeeded}` : null) : null,
-    d.requestKind === 'PTO' ? (d.hasSubPlans ? `*Sub plans:* ${d.hasSubPlans}${d.subPlansLink ? ` (${d.subPlansLink})` : ''}` : null) : null,
-    d.requestKind === 'AP' ? summarizeApCoverage_(d.apCoverageJson) : null,
-    d.notes ? `*Notes:* ${d.notes}` : null,
-    `*Sheet row:* ${sheetRowNumber}`
-  ].filter(Boolean)
-
-  return lines.join('\n')
-}
-
-function summarizeApCoverage_(apCoverageJson) {
-  try {
-    const sections = JSON.parse(apCoverageJson || '[]')
-    const filled = sections
-      .filter(s => (s.coverage && s.coverage.length) || String(s.plan || '').trim())
-      .map(s => `• Set ${s.index}: ${((s.coverage || []).join(', ') || '—')} — ${String(s.plan || '').trim()}`)
-    if (!filled.length) return '*Coverage:* (none provided)'
-    return ['*Coverage:*', ...filled].join('\n')
-  } catch (e) {
-    return '*Coverage:* (unable to parse)'
-  }
-}
-
-// =====================
-// DM RECEIPT
-// =====================
-function sendReceiptDm_(it, d, sheetRowNumber) {
-  const dbg = getOrCreateDebugSheet_(cfg)
-
-  const userId = String(it.user || '').trim()
-  if (!userId) {
-    dbg.appendRow([new Date(), 'sendReceiptDm_', 'ABORT missing userId'])
-    return
-  }
-
-  const text = buildReceiptDmText_(it, d, sheetRowNumber)
-
-  const res = slackApi_(cfg, 'chat.postMessage', {
-    channel: userId,
-    text
-  })
-
-  if (!res || !res.ok) {
-    dbg.appendRow([new Date(), 'sendReceiptDm_', 'FAIL', userId, JSON.stringify(res || {})])
-    return
-  }
-
-  dbg.appendRow([new Date(), 'sendReceiptDm_', 'SENT', userId, res.ts || ''])
-}
-
-function buildReceiptDmText_(it, d, sheetRowNumber) {
-  const who = it.userName ? `@${it.userName}` : (it.user || 'Unknown')
-  const whenBits = [
-    d.startDate ? `${d.startDate}${d.startTime ? ` ${d.startTime}` : ''}` : '',
-    d.endDate ? `${d.endDate}${d.endTime ? ` ${d.endTime}` : ''}` : ''
-  ].filter(Boolean)
-
-  const lines = [
-    d.requestKind === 'AP' ? '✅ *AP Request Received*' : '✅ *PTO Request Received*',
-    `*From:* ${who}`,
-    whenBits.length ? `*When:* ${whenBits.join(' → ')}` : null,
-    `*AP request:* ${d.isApRequest || 'no'} (eligible: ${d.apEligible || 'n/a'})`,
-    d.requestKind === 'PTO' ? `*Off-site assignment:* ${d.offsiteAssignment || ''}` : null,
-    d.requestKind === 'PTO' ? (d.coverageNeeded ? `*Coverage:* ${d.coverageNeeded}` : null) : null,
-    d.requestKind === 'PTO' ? (d.hasSubPlans ? `*Sub plans:* ${d.hasSubPlans}${d.subPlansLink ? ` (${d.subPlansLink})` : ''}` : null) : null,
-    d.requestKind === 'AP' ? summarizeApCoverage_(d.apCoverageJson) : null,
-    d.notes ? `*Notes:* ${d.notes}` : null,
-    sheetRowNumber ? `*Receipt ID:* Row ${sheetRowNumber}` : null
-  ].filter(Boolean)
-
-  return lines.join('\n')
-}
-
-// =====================
-// EMAIL RECEIPTS
-// =====================
-function sendSubmitReceiptEmails_(it, d, userEmailOverride) {
-  const dbg = getDebugSheet_()
-
-  const userId = String(it.user || '').trim()
-  if (!userId) {
-    dbg.appendRow([new Date(), 'sendSubmitReceiptEmails_', 'ABORT missing userId'])
-    return
-  }
-
-  const userEmail = String(userEmailOverride || getSlackEmailByUserId_(cfg, userId) || '').trim()
-  if (!userEmail) {
-    dbg.appendRow([new Date(), 'sendSubmitReceiptEmails_', `ABORT no email for ${userId}`])
-    return
-  }
-
-  const subject = buildReceiptSubject_(it, d)
-  const htmlBody = buildReceiptHtml_(it, d, userEmail)
-  const textBody = buildReceiptText_(it, d, userEmail)
-
-  safeSendEmail_({ to: userEmail, subject, htmlBody, textBody }, dbg)
-
-  if (cfg.ADMIN_EMAILS && cfg.ADMIN_EMAILS.length) {
-    safeSendEmail_({
-      to: cfg.ADMIN_EMAILS.join(','),
-      subject: '[ADMIN COPY] ' + subject,
-      htmlBody,
-      textBody
-    }, dbg)
-  }
-
-  dbg.appendRow([new Date(), 'sendSubmitReceiptEmails_', 'SENT', userEmail, (cfg.ADMIN_EMAILS || []).join(',')])
-}
-
-function buildReceiptSubject_(it, d) {
-  const prefix = cfg.EMAIL_SUBJECT_PREFIX || 'Time Off Receipt'
-  const who = it.userName ? `@${it.userName}` : (it.user || 'Unknown')
-  const start = d.startDate || ''
-  const end = d.endDate || ''
-  const span = (start || end) ? ` ${start}${end ? ` → ${end}` : ''}` : ''
-  return `${prefix}: ${d.requestKind || 'Request'} ${who}${span}`
-}
-
-function buildReceiptHtml_(it, d, userEmail) {
-  const baseRows = [
-    ['Request Kind', d.requestKind],
-    ['Slack User', it.userName ? `@${it.userName}` : (it.user || '')],
-    ['Email', userEmail],
-    ['Start', `${d.startDate || ''} ${d.startTime || ''}`.trim()],
-    ['End', `${d.endDate || ''} ${d.endTime || ''}`.trim()],
-    ['Is AP Request', d.isApRequest],
-    ['AP Eligible (>=5 days)', d.apEligible],
-    ['Days Until Start', d.apDaysUntilStart]
-  ]
-
-  const ptoRows = [
-    ['Off-site Assignment', d.offsiteAssignment],
-    ['Coverage Needed', d.coverageNeeded],
-    ['Has Sub Plans', d.hasSubPlans],
-    ['Sub Plans Link', d.subPlansLink],
-    ['Notes', d.notes]
-  ]
-
-  const apRows = [
-    ['AP Coverage', summarizeApCoveragePlain_(d.apCoverageJson)]
-  ]
-
-  const rows = (d.requestKind === 'AP')
-    ? baseRows.concat(apRows)
-    : baseRows.concat(ptoRows)
-
-  const filtered = rows.filter(r => String(r[1] || '').trim() !== '')
-
-  const tr = filtered.map(r => {
-    return '<tr>' +
-      '<td style="border:1px solid #ddd;padding:8px;width:35%"><b>' + escapeHtml_(r[0]) + '</b></td>' +
-      '<td style="border:1px solid #ddd;padding:8px">' + escapeHtml_(String(r[1] || '')) + '</td>' +
-    '</tr>'
-  }).join('')
-
-  return [
-    '<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.4">',
-    '<h2 style="margin:0 0 10px 0">Time Off Request Receipt</h2>',
-    '<div style="color:#555;margin-bottom:12px">Automated copy of your Slack submission.</div>',
-    '<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%"><tbody>',
-    tr,
-    '</tbody></table>',
-    '</div>'
-  ].join('')
-}
-
-function buildReceiptText_(it, d, userEmail) {
-  const lines = [
-    'Time Off Request Receipt',
-    `Request Kind: ${d.requestKind || ''}`,
-    `Slack User: ${it.userName ? '@' + it.userName : (it.user || '')}`,
-    `Email: ${userEmail}`,
-    '',
-    `Start: ${d.startDate || ''} ${d.startTime || ''}`.trim(),
-    `End: ${d.endDate || ''} ${d.endTime || ''}`.trim(),
-    `AP request: ${d.isApRequest || ''} (eligible: ${d.apEligible || ''})`
-  ]
-
-  if (d.requestKind === 'AP') {
-    lines.push('')
-    lines.push('AP Coverage:')
-    lines.push(summarizeApCoveragePlain_(d.apCoverageJson))
-  } else {
-    lines.push('')
-    lines.push(`Off-site Assignment: ${d.offsiteAssignment || ''}`)
-    lines.push(`Coverage Needed: ${d.coverageNeeded || ''}`)
-    lines.push(`Has Sub Plans: ${d.hasSubPlans || ''}`)
-    lines.push(`Sub Plans Link: ${d.subPlansLink || ''}`)
-    lines.push(`Notes: ${d.notes || ''}`)
-  }
-
-  return lines.join('\n')
-}
-
-function summarizeApCoveragePlain_(apCoverageJson) {
-  try {
-    const sections = JSON.parse(apCoverageJson || '[]')
-    const filled = sections
-      .filter(s => (s.coverage && s.coverage.length) || String(s.plan || '').trim())
-      .map(s => `Set ${s.index}: ${(s.coverage || []).join(', ') || '—'} | ${String(s.plan || '').trim()}`)
-    return filled.length ? filled.join('\n') : '(none provided)'
-  } catch (e) {
-    return '(unable to parse)'
-  }
-}
-
-function safeSendEmail_(p, dbg) {
-  try {
-    const opts = { htmlBody: p.htmlBody || '' }
-    if (cfg.FROM_ALIAS) opts.from = cfg.FROM_ALIAS
-    MailApp.sendEmail(p.to, p.subject, p.textBody || stripHtml_(p.htmlBody || ''), opts)
-  } catch (err) {
-    dbg.appendRow([new Date(), 'safeSendEmail_', 'FAIL', p.to, p.subject, String(err && err.stack || err)])
-  }
-}
-
-function escapeHtml_(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;')
-}
-
-function stripHtml_(s) {
-  return String(s).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
-}
-
-// =====================
-// OPTIONAL: Slack signature verification
-// =====================
-function verifySlackSignature_(e) {
-  try {
-    const headers = e?.headers || {}
-    const timestamp = headers['X-Slack-Request-Timestamp'] || headers['x-slack-request-timestamp']
-    const signature = headers['X-Slack-Signature'] || headers['x-slack-signature']
-    if (!timestamp || !signature) return false
-
-    const now = Math.floor(Date.now() / 1000)
-    if (Math.abs(now - Number(timestamp)) > 60 * 5) return false
-
-    const body = e.postData?.contents || ''
-    const baseString = `v0:${timestamp}:${body}`
-    const hash = Utilities.computeHmacSha256Signature(baseString, cfg.SLACK_SIGNING_SECRET)
-    const hex = hash.map(b => ('0' + (b & 0xff).toString(16)).slice(-2)).join('')
-    const expected = `v0=${hex}`
-    return timingSafeEqual_(expected, signature)
-  } catch (err) {
-    return false
-  }
-}
-
-function timingSafeEqual_(a, b) {
-  if (a.length !== b.length) return false
-  let out = 0
-  for (let i = 0; i < a.length; i++) out |= a.charCodeAt(i) ^ b.charCodeAt(i)
-  return out === 0
-}
-
-// =====================
-// LEGACY / SEPARATE FORM SUBMIT WEBHOOK CODE
-// (Leaving it here since you pasted it, but it is unrelated to the Slack modal flow)
-// =====================
-function getCfg_() {
-  return {
-    SHEET_NAME: 'Responses',
-    SLACK_WEBHOOK_URL: PropertiesService.getScriptProperties().getProperty('SLACK_WEBHOOK_URL')
-  }
-}
-
-function onFormSubmit(e) {
-  const cfg = getCfg_()
-
-  try {
-    const sh = e.range.getSheet()
-    if (cfg.SHEET_NAME && sh.getName() !== cfg.SHEET_NAME) return
-
-    const row = e.range.getRow()
-    const lastCol = sh.getLastColumn()
-
-    const headers = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(String)
-    const values = sh.getRange(row, 1, 1, lastCol).getValues()[0]
-
-    const rowObj = {}
-    headers.forEach((h, i) => rowObj[h || `COL_${i + 1}`] = values[i])
-
-    const title = '📥 New spreadsheet entry received'
-    const lines = [
-      `*Sheet:* ${sh.getName()}`,
-      `*Row:* ${row}`,
-      rowObj['Email Address'] ? `*Email:* ${rowObj['Email Address']}` : null,
-      rowObj['Name'] ? `*Name:* ${rowObj['Name']}` : null
-    ].filter(Boolean)
-
-    postToSlack_(cfg.SLACK_WEBHOOK_URL, `${title}\n${lines.join('\n')}`)
-  } catch (err) {
-    console.error(err)
-  }
-}
-
-function postToSlack_(webhookUrl, text) {
-  if (!webhookUrl) throw new Error('Missing SLACK_WEBHOOK_URL')
-
-  const payload = { text }
-
-  UrlFetchApp.fetch(webhookUrl, {
-    method: 'post',
-    contentType: 'application/json',
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  })
-}
-
-
-function flushFutureTimeOffQueue_() {
   const cfg = getConfig_()
-  const props = PropertiesService.getScriptProperties()
+  const lock = LockService.getScriptLock()
+  if (!lock.tryLock(1000)) return
 
-  // allow a new trigger to be created next submission
-  props.deleteProperty(cfg.FUTURE_FLUSH_TRIGGER_PROP_KEY)
+  let items = []
+  try {
+    const props = PropertiesService.getScriptProperties()
 
-  // drain queue
-  const raw = props.getProperty(cfg.FUTURE_QUEUE_PROP_KEY)
-  const items = raw ? JSON.parse(raw) : []
-  if (!items.length) return
+    const raw = props.getProperty(cfg.FUTURE_QUEUE_PROP_KEY)
+    items = raw ? JSON.parse(raw) : []
+    if (!items.length) return
 
-  // clear queue
-  props.deleteProperty(cfg.FUTURE_QUEUE_PROP_KEY)
+    // Clear queue first (so if we error mid-way, we can requeue cleanly)
+    props.deleteProperty(cfg.FUTURE_QUEUE_PROP_KEY)
 
-  // open spreadsheet + sheets
-  const ss = SpreadsheetApp.openByUrl(cfg.SHEET_URL)
-  const sh = ss.getSheetByName(cfg.FUTURE_SHEET_NAME) || ss.insertSheet(cfg.FUTURE_SHEET_NAME)
-  const dbg = ss.getSheetByName(cfg.DEBUG_SHEET) || ss.insertSheet(cfg.DEBUG_SHEET)
+    const ss = SpreadsheetApp.openByUrl(cfg.SHEET_URL)
+    const sh = ss.getSheetByName(cfg.FUTURE_SHEET_NAME) || ss.insertSheet(cfg.FUTURE_SHEET_NAME)
+    const dbg = ss.getSheetByName(cfg.DEBUG_SHEET) || ss.insertSheet(cfg.DEBUG_SHEET)
 
-  // ---------- local helpers ----------
-  const nowIso = () => new Date().toISOString()
-
-  const ensureHeader_ = () => {
-    if (sh.getLastRow() > 0) return
-    sh.appendRow([
-      'Timestamp ISO',
-      'Request Kind',
-      'Slack User ID',
-      'Slack Username',
-      'Slack Email',
-      'Start Date',
-      'Start Time',
-      'End Date',
-      'End Time',
-      'Is AP Request',
-      'AP Eligible (>=5 days)',
-      'Days Until Start',
-      'Off-site Assignment',
-      'Coverage Needed',
-      'Has Sub Plans',
-      'Sub Plans Link',
-      'Notes',
-      'AP Approval URL'
-    ])
-  }
-
-  const getSlackEmailByUserId_ = (userId) => {
-    if (!userId) return ''
-    try {
-      const res = UrlFetchApp.fetch(
-        'https://slack.com/api/users.info?user=' + encodeURIComponent(userId),
-        {
-          method: 'get',
-          headers: { Authorization: 'Bearer ' + cfg.SLACK_BOT_TOKEN },
-          muteHttpExceptions: true
-        }
-      )
-      const data = JSON.parse(res.getContentText() || '{}')
-      if (!data.ok) return ''
-      return data.user?.profile?.email || ''
-    } catch (e) {
-      dbg.appendRow([new Date(), 'getSlackEmailByUserId_', 'EXCEPTION', String(e && e.stack || e)])
-      return ''
+    // headers
+    if (sh.getLastRow() === 0) {
+      sh.appendRow([
+        'Timestamp ISO',
+        'Request Kind',
+        'Slack User ID',
+        'Slack Username',
+        'Slack Email',
+        'Start Date',
+        'Start Time',
+        'End Date',
+        'End Time',
+        'Is AP Request',
+        'AP Eligible (>=5 days)',
+        'Days Until Start',
+        'Off-site Assignment',
+        'Coverage Needed',
+        'Has Sub Plans',
+        'Sub Plans Link',
+        'Notes',
+        'AP Approval URL'
+      ])
     }
-  }
 
-  const formatAlertText_ = (it, d, rowNumber) => {
-    const who = it.userName ? `@${it.userName}` : (it.user || 'Unknown user')
-    const whenBits = [
-      d.startDate ? `${d.startDate}${d.startTime ? ` ${d.startTime}` : ''}` : '',
-      d.endDate ? `${d.endDate}${d.endTime ? ` ${d.endTime}` : ''}` : ''
-    ].filter(Boolean)
+    const nowIso = () => new Date().toISOString()
 
-    const lines = [
-      d.requestKind === 'AP' ? '🚨 *New AP Request*' : '🚨 *New PTO Request*',
-      `*From:* ${who}`,
-      whenBits.length ? `*When:* ${whenBits.join(' → ')}` : null,
-      `*AP request:* ${d.isApRequest || 'no'} (eligible: ${d.apEligible || 'n/a'})`,
-      d.requestKind === 'PTO' ? `*Off-site assignment:* ${d.offsiteAssignment || ''}` : null,
-      d.requestKind === 'PTO' ? (d.coverageNeeded ? `*Coverage:* ${d.coverageNeeded}` : null) : null,
-      d.requestKind === 'PTO' ? (d.hasSubPlans ? `*Sub plans:* ${d.hasSubPlans}${d.subPlansLink ? ` (${d.subPlansLink})` : ''}` : null) : null,
-      d.requestKind === 'AP' ? (d.apApprovalUrl ? `*AP approval:* ${d.apApprovalUrl}` : null) : null,
-      d.notes ? `*Notes:* ${d.notes}` : null,
-      `*Sheet row:* ${rowNumber}`
-    ].filter(Boolean)
+    // cache emails within this flush
+    const emailCache = {}
 
-    return lines.join('\n')
-  }
+    const getSlackEmailSafe_ = (userId) => {
+      const uid = String(userId || '').trim()
+      if (!uid) return ''
+      if (emailCache[uid] !== undefined) return emailCache[uid]
 
-  const buildDmReceiptText_ = (it, d, rowNumber) => {
-    const who = it.userName ? `@${it.userName}` : (it.user || 'Unknown')
-    const whenBits = [
-      d.startDate ? `${d.startDate}${d.startTime ? ` ${d.startTime}` : ''}` : '',
-      d.endDate ? `${d.endDate}${d.endTime ? ` ${d.endTime}` : ''}` : ''
-    ].filter(Boolean)
-
-    const lines = [
-      d.requestKind === 'AP' ? '✅ *AP Request Received*' : '✅ *PTO Request Received*',
-      `*From:* ${who}`,
-      whenBits.length ? `*When:* ${whenBits.join(' → ')}` : null,
-      `*AP request:* ${d.isApRequest || 'no'} (eligible: ${d.apEligible || 'n/a'})`,
-      d.requestKind === 'PTO' ? `*Off-site assignment:* ${d.offsiteAssignment || ''}` : null,
-      d.requestKind === 'PTO' ? (d.coverageNeeded ? `*Coverage:* ${d.coverageNeeded}` : null) : null,
-      d.requestKind === 'PTO' ? (d.hasSubPlans ? `*Sub plans:* ${d.hasSubPlans}${d.subPlansLink ? ` (${d.subPlansLink})` : ''}` : null) : null,
-      d.requestKind === 'AP' ? (d.apApprovalUrl ? `*AP approval:* ${d.apApprovalUrl}` : null) : null,
-      d.notes ? `*Notes:* ${d.notes}` : null,
-      rowNumber ? `*Receipt ID:* Row ${rowNumber}` : null
-    ].filter(Boolean)
-
-    return lines.join('\n')
-  }
-
-  const safeSendEmail_ = (to, subject, textBody) => {
-    try {
-      if (!to) return
-      const opts = {}
-      if (cfg.EMAIL_ALIAS) opts.from = cfg.EMAIL_ALIAS
-      MailApp.sendEmail(to, subject, textBody, opts)
-    } catch (e) {
-      dbg.appendRow([new Date(), 'safeSendEmail_', 'FAIL', to, subject, String(e && e.stack || e)])
-    }
-  }
-
-  const buildEmailSubject_ = (it, d) => {
-    const who = it.userName ? `@${it.userName}` : (it.user || 'Unknown')
-    const start = d.startDate || ''
-    const end = d.endDate || ''
-    const span = (start || end) ? ` ${start}${end ? ` → ${end}` : ''}` : ''
-    return `Time Off Receipt: ${d.requestKind || 'Request'} ${who}${span}`
-  }
-
-  const buildEmailText_ = (it, d, userEmail, rowNumber) => {
-    const lines = [
-      'Time Off Request Receipt',
-      '',
-      `Receipt ID: Row ${rowNumber}`,
-      `Request Kind: ${d.requestKind || ''}`,
-      `Slack User: ${it.userName ? '@' + it.userName : (it.user || '')}`,
-      `Email: ${userEmail || ''}`,
-      '',
-      `Start: ${(d.startDate || '')} ${(d.startTime || '')}`.trim(),
-      `End: ${(d.endDate || '')} ${(d.endTime || '')}`.trim(),
-      `AP request: ${d.isApRequest || ''} (eligible: ${d.apEligible || ''})`,
-      d.apDaysUntilStart !== undefined ? `Days until start: ${d.apDaysUntilStart || ''}` : null,
-      '',
-      d.requestKind === 'PTO' ? `Off-site assignment: ${d.offsiteAssignment || ''}` : null,
-      d.requestKind === 'PTO' ? `Coverage needed: ${d.coverageNeeded || ''}` : null,
-      d.requestKind === 'PTO' ? `Has sub plans: ${d.hasSubPlans || ''}` : null,
-      d.requestKind === 'PTO' ? `Sub plans link: ${d.subPlansLink || ''}` : null,
-      d.notes ? `Notes: ${d.notes}` : null,
-      d.requestKind === 'AP' && d.apApprovalUrl ? '' : null,
-      d.requestKind === 'AP' && d.apApprovalUrl ? `AP approval link: ${d.apApprovalUrl}` : null
-    ].filter(v => v !== null)
-
-    return lines.join('\n')
-  }
-  // ---------- end helpers ----------
-
-  ensureHeader_()
-
-  // build rows first
-  const startRow = sh.getLastRow() + 1
-  const rows = []
-  const emailCache = {}
-
-  items.forEach(it => {
-    const d = it.data || {}
-    const userId = String(it.user || '').trim()
-
-    if (!emailCache[userId]) emailCache[userId] = getSlackEmailByUserId_(userId)
-
-    rows.push([
-      nowIso(),
-      d.requestKind || '',
-      userId,
-      it.userName || '',
-      emailCache[userId] || '',
-      d.startDate || '',
-      d.startTime || '',
-      d.endDate || '',
-      d.endTime || '',
-      d.isApRequest || '',
-      d.apEligible || '',
-      d.apDaysUntilStart || '',
-      d.offsiteAssignment || '',
-      d.coverageNeeded || '',
-      d.hasSubPlans || '',
-      d.subPlansLink || '',
-      d.notes || '',
-      d.apApprovalUrl || ''
-    ])
-  })
-
-  // write to sheet
-  sh.getRange(startRow, 1, rows.length, rows[0].length).setValues(rows)
-
-  // per-item notifications/receipts
-  items.forEach((it, idx) => {
-    const d = it.data || {}
-    const rowNumber = startRow + idx
-    const userId = String(it.user || '').trim()
-
-    // channel alert
-    try {
-      const notifyChannelId = cfg.FUTURE_NOTIFY_CHANNEL
-      if (notifyChannelId) {
-        const text = formatAlertText_(it, d, rowNumber)
-        const res = slackApi_(cfg, 'chat.postMessage', { channel: notifyChannelId, text })
-        dbg.appendRow([new Date(), 'future_notify', `ok=${res?.ok} err=${res?.error || ''}`, notifyChannelId, rowNumber])
-      } else {
-        dbg.appendRow([new Date(), 'future_notify', 'SKIP missing FUTURE_NOTIFY_CHANNEL', rowNumber])
+      try {
+        const res = UrlFetchApp.fetch(
+          'https://slack.com/api/users.info?user=' + encodeURIComponent(uid),
+          {
+            method: 'get',
+            headers: { Authorization: 'Bearer ' + cfg.SLACK_BOT_TOKEN },
+            muteHttpExceptions: true
+          }
+        )
+        const data = JSON.parse(res.getContentText() || '{}')
+        const email = (data && data.ok) ? (data.user?.profile?.email || '') : ''
+        emailCache[uid] = email
+        return email
+      } catch (e) {
+        emailCache[uid] = ''
+        dbg.appendRow([new Date(), 'future_email_lookup', 'EXCEPTION', uid, String(e && e.stack || e)])
+        return ''
       }
-    } catch (e) {
-      dbg.appendRow([new Date(), 'future_notify', 'EXCEPTION', rowNumber, String(e && e.stack || e)])
     }
 
-    // DM receipt
-    try {
-      const dmText = buildDmReceiptText_(it, d, rowNumber)
-      dmUser_(cfg, userId, dmText)
-      dbg.appendRow([new Date(), 'future_dm', 'SENT', userId, rowNumber])
-    } catch (e) {
-      dbg.appendRow([new Date(), 'future_dm', 'EXCEPTION', userId, rowNumber, String(e && e.stack || e)])
+    const formatAlertTextLocal_ = (it, d, rowNumber) => {
+      const who = it.userName ? `@${it.userName}` : (it.user || 'Unknown user')
+      const whenBits = [
+        d.startDate ? `${d.startDate}${d.startTime ? ` ${d.startTime}` : ''}` : '',
+        d.endDate ? `${d.endDate}${d.endTime ? ` ${d.endTime}` : ''}` : ''
+      ].filter(Boolean)
+
+      const lines = [
+        d.requestKind === 'AP' ? '🚨 *New AP Request*' : '🚨 *New PTO Request*',
+        `*From:* ${who}`,
+        whenBits.length ? `*When:* ${whenBits.join(' → ')}` : null,
+        `*AP request:* ${d.isApRequest || 'no'} (eligible: ${d.apEligible || 'n/a'})`,
+        d.requestKind === 'PTO' ? `*Off-site assignment:* ${d.offsiteAssignment || ''}` : null,
+        d.requestKind === 'PTO' ? (d.coverageNeeded ? `*Coverage:* ${d.coverageNeeded}` : null) : null,
+        d.requestKind === 'PTO' ? (d.hasSubPlans ? `*Sub plans:* ${d.hasSubPlans}${d.subPlansLink ? ` (${d.subPlansLink})` : ''}` : null) : null,
+        d.requestKind === 'AP' ? (d.apApprovalUrl ? `*AP approval:* ${d.apApprovalUrl}` : null) : null,
+        d.notes ? `*Notes:* ${d.notes}` : null,
+        `*Sheet row:* ${rowNumber}`
+      ].filter(Boolean)
+
+      return lines.join('\n')
     }
 
-    // email receipt
-    try {
-      const userEmail = emailCache[userId] || ''
-      if (!userEmail) {
-        dbg.appendRow([new Date(), 'future_email', 'SKIP no email', userId, rowNumber])
-      } else {
-        const subject = buildEmailSubject_(it, d)
-        const body = buildEmailText_(it, d, userEmail, rowNumber)
-        safeSendEmail_(userEmail, subject, body)
+    const buildDmTextLocal_ = (it, d, rowNumber) => {
+      const who = it.userName ? `@${it.userName}` : (it.user || 'Unknown')
+      const whenBits = [
+        d.startDate ? `${d.startDate}${d.startTime ? ` ${d.startTime}` : ''}` : '',
+        d.endDate ? `${d.endDate}${d.endTime ? ` ${d.endTime}` : ''}` : ''
+      ].filter(Boolean)
 
-        if (cfg.ADMIN_EMAILS && Array.isArray(cfg.ADMIN_EMAILS) && cfg.ADMIN_EMAILS.length) {
-          safeSendEmail_(cfg.ADMIN_EMAILS.join(','), '[ADMIN COPY] ' + subject, body)
-        }
+      const lines = [
+        d.requestKind === 'AP' ? '✅ *AP Request Received*' : '✅ *PTO Request Received*',
+        `*From:* ${who}`,
+        whenBits.length ? `*When:* ${whenBits.join(' → ')}` : null,
+        `*AP request:* ${d.isApRequest || 'no'} (eligible: ${d.apEligible || 'n/a'})`,
+        d.requestKind === 'PTO' ? `*Off-site assignment:* ${d.offsiteAssignment || ''}` : null,
+        d.requestKind === 'PTO' ? (d.coverageNeeded ? `*Coverage:* ${d.coverageNeeded}` : null) : null,
+        d.requestKind === 'PTO' ? (d.hasSubPlans ? `*Sub plans:* ${d.hasSubPlans}${d.subPlansLink ? ` (${d.subPlansLink})` : ''}` : null) : null,
+        d.requestKind === 'AP' ? (d.apApprovalUrl ? `*AP approval:* ${d.apApprovalUrl}` : null) : null,
+        d.notes ? `*Notes:* ${d.notes}` : null,
+        `*Receipt ID:* Row ${rowNumber}`
+      ].filter(Boolean)
 
-        dbg.appendRow([new Date(), 'future_email', 'SENT', userEmail, rowNumber])
+      return lines.join('\n')
+    }
+
+    const buildEmailSubjectLocal_ = (it, d) => {
+      const who = it.userName ? `@${it.userName}` : (it.user || 'Unknown')
+      const start = d.startDate || ''
+      const end = d.endDate || ''
+      const span = (start || end) ? ` ${start}${end ? ` → ${end}` : ''}` : ''
+      return `Time Off Receipt: ${d.requestKind || 'Request'} ${who}${span}`
+    }
+
+    const buildEmailTextLocal_ = (it, d, userEmail, rowNumber) => {
+      const lines = [
+        'Time Off Request Receipt',
+        '',
+        `Receipt ID: Row ${rowNumber}`,
+        `Request Kind: ${d.requestKind || ''}`,
+        `Slack User: ${it.userName ? '@' + it.userName : (it.user || '')}`,
+        `Email: ${userEmail || ''}`,
+        '',
+        `Start: ${(d.startDate || '')} ${(d.startTime || '')}`.trim(),
+        `End: ${(d.endDate || '')} ${(d.endTime || '')}`.trim(),
+        `AP request: ${d.isApRequest || ''} (eligible: ${d.apEligible || ''})`,
+        d.apDaysUntilStart !== undefined ? `Days until start: ${d.apDaysUntilStart || ''}` : null,
+        '',
+        d.requestKind === 'PTO' ? `Off-site assignment: ${d.offsiteAssignment || ''}` : null,
+        d.requestKind === 'PTO' ? `Coverage needed: ${d.coverageNeeded || ''}` : null,
+        d.requestKind === 'PTO' ? `Has sub plans: ${d.hasSubPlans || ''}` : null,
+        d.requestKind === 'PTO' ? `Sub plans link: ${d.subPlansLink || ''}` : null,
+        d.notes ? `Notes: ${d.notes}` : null,
+        d.requestKind === 'AP' && d.apApprovalUrl ? '' : null,
+        d.requestKind === 'AP' && d.apApprovalUrl ? `AP approval link: ${d.apApprovalUrl}` : null
+      ].filter(v => v !== null)
+
+      return lines.join('\n')
+    }
+
+    const safeSendEmailLocal_ = (to, subject, textBody) => {
+      try {
+        const email = String(to || '').trim()
+        if (!email) return
+        const opts = {}
+        if (cfg.EMAIL_ALIAS) opts.from = cfg.EMAIL_ALIAS
+        MailApp.sendEmail(email, subject, textBody, opts)
+      } catch (e) {
+        dbg.appendRow([new Date(), 'future_email', 'FAIL', to, subject, String(e && e.stack || e)])
       }
-    } catch (e) {
-      dbg.appendRow([new Date(), 'future_email', 'EXCEPTION', userId, rowNumber, String(e && e.stack || e)])
     }
-  })
 
-  debugLog_(cfg, 'flushFutureTimeOffQueue_', `Processed ${items.length} item(s)`)
+    // Build rows
+    const startRow = sh.getLastRow() + 1
+    const rows = items.map(it => {
+      const d = it.data || {}
+      const userId = String(it.user || '').trim()
+      const email = getSlackEmailSafe_(userId)
+
+      return [
+        nowIso(),
+        d.requestKind || '',
+        userId,
+        it.userName || '',
+        email || '',
+        d.startDate || '',
+        d.startTime || '',
+        d.endDate || '',
+        d.endTime || '',
+        d.isApRequest || '',
+        d.apEligible || '',
+        d.apDaysUntilStart || '',
+        d.offsiteAssignment || '',
+        d.coverageNeeded || '',
+        d.hasSubPlans || '',
+        d.subPlansLink || '',
+        d.notes || '',
+        d.apApprovalUrl || ''
+      ]
+    })
+
+    sh.getRange(startRow, 1, rows.length, rows[0].length).setValues(rows)
+
+    // Notify/DM/email after sheet write so we have receipt row numbers
+    items.forEach((it, idx) => {
+      const d = it.data || {}
+      const rowNumber = startRow + idx
+      const userId = String(it.user || '').trim()
+      const email = emailCache[userId] || ''
+
+      // Notify channel
+      try {
+        const ch = cfg.FUTURE_NOTIFY_CHANNEL
+        if (ch) {
+          const text = formatAlertTextLocal_(it, d, rowNumber)
+          const res = slackApi_(cfg, 'chat.postMessage', { channel: ch, text })
+          dbg.appendRow([new Date(), 'future_notify', `ok=${res?.ok} err=${res?.error || ''}`, ch, rowNumber])
+        }
+      } catch (e) {
+        dbg.appendRow([new Date(), 'future_notify', 'EXCEPTION', rowNumber, String(e && e.stack || e)])
+      }
+
+      // DM receipt
+      try {
+        const dmText = buildDmTextLocal_(it, d, rowNumber)
+        dmUser_(cfg, userId, dmText)
+        dbg.appendRow([new Date(), 'future_dm', 'SENT', userId, rowNumber])
+      } catch (e) {
+        dbg.appendRow([new Date(), 'future_dm', 'EXCEPTION', userId, rowNumber, String(e && e.stack || e)])
+      }
+
+      // Email receipt
+      try {
+        if (email) {
+          const subject = buildEmailSubjectLocal_(it, d)
+          const body = buildEmailTextLocal_(it, d, email, rowNumber)
+          safeSendEmailLocal_(email, subject, body)
+
+          if (cfg.ADMIN_EMAILS && Array.isArray(cfg.ADMIN_EMAILS) && cfg.ADMIN_EMAILS.length) {
+            safeSendEmailLocal_(cfg.ADMIN_EMAILS.join(','), '[ADMIN COPY] ' + subject, body)
+          }
+
+          dbg.appendRow([new Date(), 'future_email', 'SENT', email, rowNumber])
+        } else {
+          dbg.appendRow([new Date(), 'future_email', 'SKIP no email', userId, rowNumber])
+        }
+      } catch (e) {
+        dbg.appendRow([new Date(), 'future_email', 'EXCEPTION', userId, rowNumber, String(e && e.stack || e)])
+      }
+    })
+
+    debugLog_(cfg, 'flushFutureTimeOffQueueCentral_', `Processed ${items.length} item(s)`)
+  } catch (err) {
+    // If flush fails, requeue everything so it retries next minute
+    try {
+      const cfg = getConfig_()
+      const props = PropertiesService.getScriptProperties()
+      const rawExisting = props.getProperty(cfg.FUTURE_QUEUE_PROP_KEY)
+      const existing = rawExisting ? JSON.parse(rawExisting) : []
+      // We can't access the local `items` here safely if parsing failed early,
+      // so we only log the failure.
+      debugLog_(cfg, 'flushFutureTimeOffQueueCentral__ERROR', String(err && err.stack || err))
+      props.setProperty(cfg.FUTURE_QUEUE_PROP_KEY, JSON.stringify(existing))
+    } catch (e) {}
+  } finally {
+    lock.releaseLock()
+  }
 }
+
+
+
+
+
+
 

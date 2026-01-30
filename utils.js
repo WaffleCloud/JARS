@@ -1,9 +1,20 @@
 
+function getSlackTokenCached_() {
+  const cache = CacheService.getScriptCache()
+  const k = 'SLACK_BOT_TOKEN_CACHED'
+  const cached = cache.get(k)
+  if (cached) return cached
+
+  const tok = PropertiesService.getScriptProperties().getProperty('SLACK_BOT_TOKEN') || ''
+  if (tok) cache.put(k, tok, 300)
+  return tok
+}
+
 function getConfig_() {
   return {
     TZ: 'America/Chicago',
 
-    SLACK_BOT_TOKEN: PropertiesService.getScriptProperties().getProperty('SLACK_BOT_TOKEN'),
+    SLACK_BOT_TOKEN: getSlackTokenCached_(),
 
     SHEET_URL: 'https://docs.google.com/spreadsheets/d/1ugqee5z754SaeWA6BX6yAT6iFxNsl7YTZeQdadkyOzA/edit?gid=0#gid=0',
     TEN_MIN_SHEET_NAME: '10 min or Less',
@@ -12,6 +23,8 @@ function getConfig_() {
     FUTURE_SHEET_NAME: 'Future Time Off',
     DEBUG_SHEET: 'SlackDebug',
     EMAIL_ALIAS: 'twade@jeffersonrise.org',
+    //ADMIN_EMAILS: ['admin1@school.org', 'admin2@school.org'],
+
 
     TEN_NOTIFY_CHANNEL: 'C08K43BP64B',
     LATE_NOTIFY_CHANNEL: 'C08K43BP64B',
@@ -121,71 +134,6 @@ function postAbsenceButtons() {
     throw new Error('Slack API error: ' + out.error + ' | HTTP ' + res.getResponseCode() + ' | ' + body)
   }
 }
-
-
-// function postAbsenceButtons() {
-//   const cfg = getConfig_()
-//   const url = 'https://slack.com/api/chat.postMessage'
-
-//   const payload = {
-//     channel: cfg.BUTTON_CHANNEL,
-//     text: 'Absence Reporting Options.',
-//     blocks: [
-//       {
-//         type: 'section',
-//         text: {
-//           type: 'mrkdwn',
-//           text: 'Select the type of absence you would like to report.'
-//         }
-//       },
-//       {
-//         type: 'actions',
-//         block_id: 'ten_min_late_launcher_block',
-//         elements: [
-//           {
-//             type: 'button',
-//             action_id: 'ten_min_late_button',
-//             text: { type: 'plain_text', text: 'I will be ≤ 10 minutes late.' },
-//             style: 'primary',
-//             value: 'ten_min_late'
-//           },
-//           {
-//             type: 'button',
-//             action_id: 'partial_absence_button',
-//             text: { type: 'plain_text', text: 'I will be absent part of the day today (Late Arrival/Early Departure/ Partial Day)' },
-//             style: 'primary',
-//             value: 'late_Arrival'
-//           },
-//           {
-//             type: 'button',
-//             action_id: 'same_day_full_absence',
-//             text: { type: 'plain_text', text: 'I will be absent for the full day today.' },
-//             style: 'primary',
-//             value: 'same_day_callout'
-//           },
-//           {
-//             type: 'button',
-//             action_id: 'future_time_off_button',
-//             text: { type: 'plain_text', text: 'I am requesting time off for a future date.' },
-//             style: 'primary',
-//             value: 'future_time_off'
-//           },
-//         ]
-//       }
-//     ]
-//   }
-
-//   const res = UrlFetchApp.fetch(url, {
-//     method: 'post',
-//     contentType: 'application/json; charset=utf-8',
-//     headers: { Authorization: 'Bearer ' + cfg.SLACK_BOT_TOKEN },
-//     payload: JSON.stringify(payload),
-//     muteHttpExceptions: true
-//   })
-
-//   const out = JSON.parse(res.getContentText() || '{}')
-//   if (!out.ok) throw new Error('Slack API error: ' + out.error)
-// }
 
 
 // radio helper (since your other helpers are select/multi/plain)
@@ -569,6 +517,8 @@ function hourOptions_() {
   for (let h = 1; h <= 12; h++) {
     out.push(makeOption(String(h), String(h)))
   }
+  out.push('EOD')
+  out.push('BOD')
   return out
 }
 
@@ -631,3 +581,149 @@ function unpackMeta_(privateMetadata) {
   const obj = safeJsonParse(privateMetadata) || {}
   return obj.meta || {}
 }
+
+//=====================
+//EMAIL FUNCTIONS
+//====================
+function waitForFormulaValues_(sh, rowNumber, nameCol, emailCol) {
+  let name = ''
+  let email = ''
+
+  for (let i = 0; i < 10; i++) {         // up to ~2.5 seconds total
+    SpreadsheetApp.flush()
+    Utilities.sleep(250)
+
+    name = String(sh.getRange(rowNumber, nameCol).getValue() || '').trim()
+    email = String(sh.getRange(rowNumber, emailCol).getValue() || '').trim()
+
+    if (email || name) break
+  }
+
+  return { name, email }
+}
+
+
+function getNameEmailAndSentColsFromRow_(cfg, rowNumber) {
+  const ss = SpreadsheetApp.openByUrl(cfg.SHEET_URL)
+  const sh = ss.getSheetByName(cfg.TEN_MIN_SHEET_NAME)
+  if (!sh) return { name: '', email: '', emailSent: false }
+
+  const lastCol = sh.getLastColumn()
+  const headers = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(h => String(h || '').trim())
+
+  const nameCol = headers.indexOf('Real Name') + 1
+  const emailCol = headers.indexOf('Email') + 1
+  const sentCol = headers.indexOf('Email Sent?') + 1
+
+  if (nameCol < 1 || emailCol < 1) {
+    debugLog_(cfg, 'getNameEmailAndSentColsFromRow_', 'Missing Real Name/Email headers')
+    return { name: '', email: '', emailSent: false }
+  }
+
+  const { name, email } = waitForFormulaValues_(sh, rowNumber, nameCol, emailCol)
+
+  let emailSent = false
+  if (sentCol > 0) {
+    const v = String(sh.getRange(rowNumber, sentCol).getValue() || '').toLowerCase()
+    emailSent = (v === 'yes' || v === 'true' || v === 'sent')
+  }
+
+  return { name, email, emailSent }
+}
+
+
+function debugWorker_() {
+  if (isSlackHot_()) return
+
+  const cfg = getConfig_()
+
+  // Drain up to N debug records per tick so we don’t spend too long in one run
+  const batch = qShiftBatch_(cfg.DEBUG_QUEUE_KEY, 100)
+  if (!batch.length) return
+
+  try {
+    const ss = SpreadsheetApp.openByUrl(cfg.SHEET_URL)
+    const sh = ss.getSheetByName(cfg.DEBUG_SHEET) || ss.insertSheet(cfg.DEBUG_SHEET)
+
+    // Optional headers (only if sheet is empty)
+    if (sh.getLastRow() === 0) {
+      sh.appendRow(['Timestamp', 'Source', 'Message', 'Data'])
+    }
+
+    const startRow = sh.getLastRow() + 1
+
+    const rows = batch.map(it => {
+      const ts = it?.ts ? new Date(it.ts) : new Date()
+      const source = String(it?.source || 'debugWorker_')
+      const message = String(it?.message || '')
+      let dataStr = ''
+
+      try {
+        dataStr = it?.data === undefined ? '' : JSON.stringify(it.data)
+      } catch (e) {
+        dataStr = '[unstringifiable data]'
+      }
+
+      return [ts, source, message, dataStr]
+    })
+
+    sh.getRange(startRow, 1, rows.length, 4).setValues(rows)
+  } catch (err) {
+    // If writing debug fails, we don’t want an infinite loop of debug logs
+    try { Logger.log('debugWorker_ ERROR ' + String(err && err.stack || err)) } catch (e) {}
+  }
+}
+
+
+//==========
+//Master Worker + helpers
+//==========
+
+function markSlackHot_(seconds) {
+  CacheService.getScriptCache().put('SLACK_HOT', '1', seconds || 10)
+}
+
+function isSlackHot_() {
+  return CacheService.getScriptCache().get('SLACK_HOT') === '1'
+}
+
+function runLocked_(name, fn) {
+  const lock = LockService.getScriptLock()
+  const got = lock.tryLock(1000) // 1 second
+  if (!got) {
+    Logger.log('SKIP (lock busy) ' + name)
+    return
+  }
+
+  try {
+    fn()
+  } catch (err) {
+    Logger.log('ERROR ' + name + ': ' + String(err && err.stack || err))
+  } finally {
+    lock.releaseLock()
+  }
+}
+
+function masterWorker() {
+  if (isSlackHot_()) return
+
+  const lock = LockService.getScriptLock()
+  if (!lock.tryLock(1000)) return
+
+  try {
+    tenMinLateWorker()
+    sweepTenMinEmails()
+    partialAbsenceWorker_()
+
+    submissionWorker_()
+    jobWorker_()
+
+    flushFutureTimeOffQueueCentral_()
+
+    debugWorker_()
+  } finally {
+    lock.releaseLock()
+  }
+}
+
+

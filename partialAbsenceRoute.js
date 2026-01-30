@@ -1,88 +1,114 @@
 // ===== VIEW SUBMISSIONS =====
 function handleSameDayPartialAbsenceSubmit_(cfg, payload) {
-  const view = payload.view || {}
-  const callbackId = view.callback_id
+  const cb = payload?.view?.callback_id || ''
+  if (cb !== 'same_day_partial_absence') return json_(200, { response_action: 'clear' })
 
-  if (callbackId !== 'same_day_partial_absence') {
-    return json_(200, { response_action: 'clear' })
-  }
+  const state = payload?.view?.state?.values || {}
 
-  const state = view.state && view.state.values ? view.state.values : {}
-
-  const date = getDateValue_(state, 'date_block', 'absence_date')
-
-  const startHour = getStaticSelectValue_(state, 'start_hour_block', 'start_hour') // "07"
-  const startMin = getStaticSelectValue_(state, 'start_min_block', 'start_min') // "15"
-  const endHour = getStaticSelectValue_(state, 'end_hour_block', 'end_hour')     // "14"
-  const endMin = getStaticSelectValue_(state, 'end_min_block', 'end_min')        // "05"
-
-  const coverageVals = getMultiSelectValues_(state, 'coverage_block', 'coverage_items')
-  const isEarlyDepartureVal = getStaticSelectValue_(state, 'early_departure_block', 'early_departure') // YES|NO
-  const hasSubPlans = getStaticSelectValue_(state, 'has_subplans_block', 'has_subplans') // YES|NO
-  const subPlansLink = getPlainTextValue_(state, 'subplans_link_block', 'subplans_link')
-
-  const errors = {}
-
-  if (!date) errors['date_block'] = 'Please choose a date.'
-
-  if (!startHour) errors['start_hour_block'] = 'Please choose a start hour.'
-  if (!startMin) errors['start_min_block'] = 'Please choose a start minute.'
-  if (!endHour) errors['end_hour_block'] = 'Please choose an end hour.'
-  if (!endMin) errors['end_min_block'] = 'Please choose an end minute.'
-
-  if (!coverageVals || !coverageVals.length) errors['coverage_block'] = 'Please select coverage needed.'
-  if (!isEarlyDepartureVal) errors['early_departure_block'] = 'Please choose Yes or No.'
-  if (!hasSubPlans) errors['has_subplans_block'] = 'Please choose Yes or No.'
-  if (!subPlansLink || !subPlansLink.trim()) errors['subplans_link_block'] = 'Please enter a link/location or N/A.'
-
-  const startTime = (startHour && startMin) ? `${startHour}:${startMin}` : ''
-  const endTime = (endHour && endMin) ? `${endHour}:${endMin}` : ''
-
-  if (startTime && endTime) {
-    const startMinTotal = hhmmToMinutes_(startTime)
-    const endMinTotal = hhmmToMinutes_(endTime)
-    if (endMinTotal <= startMinTotal) errors['end_hour_block'] = 'End time must be after start time.'
-  }
-
-  const isEarlyDeparture = isEarlyDepartureVal === 'YES'
-
-  
-  const lateThresholdMin = hhmmToMinutes_(cfg.LATE_THRESHOLD_HHMM)
-  const isLateArrival = startTime ? (hhmmToMinutes_(startTime) > lateThresholdMin) : false
-
+  const parsed = parseSameDayPartialAbsenceState_(state)
+  const errors = validateSameDayPartialAbsence_(cfg, parsed)
 
   if (Object.keys(errors).length) {
-    return json_(500, {
-      response_action: 'errors',
-      errors
-    })
+    return json_(200, { response_action: 'errors', errors })
   }
 
-  const notifyChannel = pickPartialAbsenceNotifyChannel_(cfg, isLateArrival)
+  const notifyChannel = pickPartialAbsenceNotifyChannel_(cfg, parsed.isLateArrival, parsed.isEarlyDeparture)
 
   enqueuePartialAbsence_(cfg, {
     submittedAt: new Date().toISOString(),
     user: payload.user,
     team: payload.team,
-    date,
-    startTime,
-    endTime,
-    coverage: coverageVals,
-    isLateArrival,
-    isEarlyDeparture,
-    hasSubPlans: hasSubPlans === 'YES',
-    subPlansLink: subPlansLink.trim(),
+    date: parsed.date,
+    startTime: parsed.startTime,
+    endTime: parsed.endTime,
+    coverage: parsed.coverageVals,
+    isLateArrival: parsed.isLateArrival,
+    isEarlyDeparture: parsed.isEarlyDeparture,
+    hasSubPlans: parsed.hasSubPlans,
+    subPlansLink: parsed.subPlansLink,
     notifyChannel
   })
+
 
   return json_(200, { response_action: 'clear' })
 }
 
-function pickPartialAbsenceNotifyChannel_(cfg, isLateArrival, isEarlyDeparture) {
-    return isLateArrival
-    ? (cfg.LATE_NOTIFY_CHANNEL || '')
-    : (cfg.EARLY_NOTIFY_CHANNEL || '') // your normal partial-day channel
+function parseSameDayPartialAbsenceState_(state) {
+  const date = getDateValue_(state, 'date_block', 'absence_date')
+
+  const startHour = getStaticSelectValue_(state, 'start_hour_block', 'start_hour')
+  const startMin = getStaticSelectValue_(state, 'start_min_block', 'start_min')
+  const endHour = getStaticSelectValue_(state, 'end_hour_block', 'end_hour')
+  const endMin = getStaticSelectValue_(state, 'end_min_block', 'end_min')
+
+  const coverageVals = getMultiSelectValues_(state, 'coverage_block', 'coverage_items') || []
+
+  const isEarlyDepartureVal = getStaticSelectValue_(state, 'early_departure_block', 'early_departure')
+  const hasSubPlansVal = getStaticSelectValue_(state, 'has_subplans_block', 'has_subplans')
+  const subPlansLinkRaw = getPlainTextValue_(state, 'subplans_link_block', 'subplans_link') || ''
+
+  const startTime = (startHour && startMin) ? `${startHour}:${startMin}` : ''
+  const endTime = (endHour && endMin) ? `${endHour}:${endMin}` : ''
+
+  return {
+    date,
+    startHour,
+    startMin,
+    endHour,
+    endMin,
+    startTime,
+    endTime,
+    coverageVals,
+    isEarlyDepartureVal,
+    hasSubPlansVal,
+    subPlansLink: subPlansLinkRaw.trim()
+  }
 }
+
+function validateSameDayPartialAbsence_(cfg, p) {
+  const errors = {}
+
+  if (!p.date) errors.date_block = 'Please choose a date.'
+
+  if (!p.startHour) errors.start_hour_block = 'Please choose a start hour.'
+  if (!p.startMin) errors.start_min_block = 'Please choose a start minute.'
+  if (!p.endHour) errors.end_hour_block = 'Please choose an end hour.'
+  if (!p.endMin) errors.end_min_block = 'Please choose an end minute.'
+
+  if (!p.coverageVals.length) errors.coverage_block = 'Please select coverage needed.'
+  if (!p.isEarlyDepartureVal) errors.early_departure_block = 'Please choose Yes or No.'
+  if (!p.hasSubPlansVal) errors.has_subplans_block = 'Please choose Yes or No.'
+  if (!p.subPlansLink) errors.subplans_link_block = 'Please enter a link/location or N/A.'
+
+  if (p.startTime && p.endTime) {
+    const startMinTotal = hhmmToMinutes_(p.startTime)
+    const endMinTotal = hhmmToMinutes_(p.endTime)
+    if (endMinTotal <= startMinTotal) errors.end_hour_block = 'End time must be after start time.'
+  }
+
+  // derived flags
+  p.isEarlyDeparture = (p.isEarlyDepartureVal === 'YES')
+
+  const lateThresholdMin = hhmmToMinutes_(cfg.LATE_THRESHOLD_HHMM)
+  p.isLateArrival = p.startTime ? (hhmmToMinutes_(p.startTime) > lateThresholdMin) : false
+
+  p.hasSubPlans = (p.hasSubPlansVal === 'YES')
+
+  return errors
+}
+
+
+function pickPartialAbsenceNotifyChannel_(cfg, isLateArrival, isEarlyDeparture) {
+  // Late arrival wins, even if also early departure
+  if (isLateArrival) return cfg.LATE_NOTIFY_CHANNEL || ''
+
+  // Only early departure
+  if (isEarlyDeparture) return cfg.EARLY_NOTIFY_CHANNEL || ''
+
+  // If neither flag is set, fallback (or blank)
+  return cfg.EARLY_NOTIFY_CHANNEL || ''
+}
+
 
 // ===== MODAL BUILDER =====
 function buildSameDayPartialAbsenceModal_(cfg, payload) {
@@ -93,6 +119,8 @@ function buildSameDayPartialAbsenceModal_(cfg, payload) {
 
   const startHourDefault = '07'
   const startMinDefault = '15'
+  const endHourDefault = '03'
+  const endMinDefault = '45'
 
   return {
     type: 'modal',
@@ -153,7 +181,8 @@ function buildSameDayPartialAbsenceModal_(cfg, payload) {
           type: 'static_select',
           action_id: 'end_hour',
           placeholder: { type: 'plain_text', text: 'Select hour' },
-          options: hourOptions
+          options: hourOptions,
+          initial_option: findOptionByValue_(hourOptions, endHourDefault)
         }
       },
       // End time (Minute)
@@ -165,7 +194,8 @@ function buildSameDayPartialAbsenceModal_(cfg, payload) {
           type: 'static_select',
           action_id: 'end_min',
           placeholder: { type: 'plain_text', text: 'Select minute' },
-          options: minuteOptions
+          options: minuteOptions,
+          initial_option: findOptionByValue_(minuteOptions, endMinDefault)
         }
       },
 
@@ -263,43 +293,85 @@ function buildMinuteOptions_() {
 // ===== QUEUE + WORKER =====
 function enqueuePartialAbsence_(cfg, item) {
   const cache = CacheService.getScriptCache()
-  const raw = cache.get(cfg.PARTIAL_ABSENCE_QUEUE_KEY)
-  const arr = raw ? JSON.parse(raw) : []
-  arr.push(item)
-  cache.put(cfg.PARTIAL_ABSENCE_QUEUE_KEY, JSON.stringify(arr), 21600)
-  ensureWorkerTriggerOnce_('partialAbsenceWorker_', cfg.PARTIAL_ABSENCE_WORKER_FLAG, 1)
+  const lock = LockService.getScriptLock()
+
+  // Never wait long on the Slack view_submission hot path
+  const got = lock.tryLock(50)
+
+  const key = cfg.PARTIAL_ABSENCE_QUEUE_KEY
+  const fallbackKey = cfg.PARTIAL_ABSENCE_QUEUE_KEY + '_FALLBACK'
+
+  try {
+    const targetKey = got ? key : fallbackKey
+
+    const raw = cache.get(targetKey)
+    const arr = raw ? safeJsonParse_(raw) : []
+    const safeArr = Array.isArray(arr) ? arr : []
+
+    safeArr.push(item)
+
+    // Keep TTL long enough for worker to catch it
+    cache.put(targetKey, JSON.stringify(safeArr), 21600)
+  } finally {
+    if (got) lock.releaseLock()
+  }
 }
+
+
+
 
 
 
 function partialAbsenceWorker_() {
+  if (isSlackHot_()) return
+
   const cfg = getConfig_()
   const cache = CacheService.getScriptCache()
-  const raw = cache.get(cfg.PARTIAL_ABSENCE_QUEUE_KEY)
-  const arr = raw ? JSON.parse(raw) : []
-  if (!arr.length) return
 
-  cache.remove(cfg.PARTIAL_ABSENCE_QUEUE_KEY)
+  const key = cfg.PARTIAL_ABSENCE_QUEUE_KEY
+  const fallbackKey = cfg.PARTIAL_ABSENCE_QUEUE_KEY + '_FALLBACK'
 
-  for (const item of arr) {
+  // Drain both queues up front
+  const rawMain = cache.get(key)
+  const rawFallback = cache.get(fallbackKey)
+
+  const mainArr = rawMain ? safeJsonParse_(rawMain) : []
+  const fallbackArr = rawFallback ? safeJsonParse_(rawFallback) : []
+
+  const batch = []
+    .concat(Array.isArray(mainArr) ? mainArr : [])
+    .concat(Array.isArray(fallbackArr) ? fallbackArr : [])
+
+  if (!batch.length) return
+
+  cache.remove(key)
+  cache.remove(fallbackKey)
+
+  const failed = []
+
+  for (const item of batch) {
     try {
       let rowNumber = ''
-
-      if (cfg.SHEET_URL) {
-        rowNumber = appendPartialAbsenceToSheet_(cfg, item)
-      }
+      if (cfg.SHEET_URL) rowNumber = appendPartialAbsenceToSheet_(cfg, item)
 
       const ch = item?.notifyChannel || ''
-      if (ch) {
-        postPartialAbsenceToSlack_(cfg, item, ch)
-      }
+      if (ch) postPartialAbsenceToSlack_(cfg, item, ch)
 
       sendPartialAbsenceReceiptDm_(cfg, item, rowNumber)
     } catch (err) {
-      debugLog_(cfg, 'partialAbsenceWorker_', String(err && err.stack || err))
+      failed.push(item)
+      try {
+        Logger.log('partialAbsenceWorker_ failed: ' + String(err && err.stack || err))
+      } catch (e) {}
     }
   }
+
+  if (failed.length) {
+    cache.put(key, JSON.stringify(failed), 21600)
+  }
 }
+
+
 
 // ===== SHEET OUTPUT =====
 function appendPartialAbsenceToSheet_(cfg, item) {
@@ -373,32 +445,32 @@ function postPartialAbsenceToSlack_(cfg, item, channelId) {
     text
   })
 
-  debugLog_(cfg, 'postPartialAbsenceToSlack_', `channel=${channelId} res=${JSON.stringify(res || {})}`)
+  // debugLog_(cfg, 'postPartialAbsenceToSlack_', `channel=${channelId} res=${JSON.stringify(res || {})}`)
 }
 
 // ===== DM RECEIPT =====
 function sendPartialAbsenceReceiptDm_(cfg, item, sheetRowNumber) {
   const userId = item?.user?.id || ''
   if (!userId) {
-    debugLog_(cfg, 'sendPartialAbsenceReceiptDm_', 'ABORT missing userId')
+    // debugLog_(cfg, 'sendPartialAbsenceReceiptDm_', 'ABORT missing userId')
     return
   }
 
   const text = buildPartialAbsenceReceiptDmText_(item, sheetRowNumber)
 
   const open = slackApi_(cfg, 'conversations.open', { users: userId })
-  debugLog_(cfg, 'sendPartialAbsenceReceiptDm_', 'OPEN ' + JSON.stringify(open || {}))
+  // debugLog_(cfg, 'sendPartialAbsenceReceiptDm_', 'OPEN ' + JSON.stringify(open || {}))
 
   if (!open || !open.ok) return
 
   const channelId = open?.channel?.id || ''
   if (!channelId) {
-    debugLog_(cfg, 'sendPartialAbsenceReceiptDm_', 'OPEN_NO_CHANNEL_ID')
+    // debugLog_(cfg, 'sendPartialAbsenceReceiptDm_', 'OPEN_NO_CHANNEL_ID')
     return
   }
 
   const post = slackApi_(cfg, 'chat.postMessage', { channel: channelId, text })
-  debugLog_(cfg, 'sendPartialAbsenceReceiptDm_', 'POST ' + JSON.stringify(post || {}))
+  // debugLog_(cfg, 'sendPartialAbsenceReceiptDm_', 'POST ' + JSON.stringify(post || {}))
 }
 
 function buildPartialAbsenceReceiptDmText_(item, sheetRowNumber) {

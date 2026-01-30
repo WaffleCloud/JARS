@@ -24,59 +24,47 @@
    =========================== */
 
 function handleFullAbsenceSubmitFast_(cfg, payload) {
-  const view = payload.view || {}
-  const state = view.state ? view.state.values : null
-  const meta = unpackMeta_(view.private_metadata)
+  try{
 
-  debugLog_(cfg, 'FULL_SUBMIT', 'hit handleFullAbsenceSubmitFast_')
-
-  const coverageValues = getMultiSelectValues_(state, 'coverage_block', 'coverage')
-  const hasSubPlans = getRadioValue_(state, 'subplans_yn_block', 'subplans_yn')
-  const subPlansLocation = getPlainTextValue_(state, 'subplans_location_block', 'subplans_location')
-
-  const errors = {}
-
-  if (!coverageValues || !coverageValues.length) errors.coverage_block = 'Required.'
-  if (!hasSubPlans) errors.subplans_yn_block = 'Required.'
-  if (!String(subPlansLocation || '').trim()) errors.subplans_location_block = 'Required. If none, type "none" or "n/a".'
-
-  if (Object.keys(errors).length) {
-    debugLog_(cfg, 'FULL_SUBMIT', 'validation errors=' + JSON.stringify(errors))
-    return json_(200, { response_action: 'errors', errors })
+    const view = payload?.view || {}
+    const state = view?.state?.values || {}
+    
+    const coverageValues = getMultiSelectValues_(state, 'coverage_block', 'coverage')
+    const hasSubPlans = getRadioValue_(state, 'subplans_yn_block', 'subplans_yn')
+    const subPlansLocation = getPlainTextValue_(state, 'subplans_location_block', 'subplans_location')
+    
+    const errors = {}
+    
+    if (!coverageValues || !coverageValues.length) errors.coverage_block = 'Required.'
+    if (!hasSubPlans) errors.subplans_yn_block = 'Required.'
+    if (!String(subPlansLocation || '').trim()) errors.subplans_location_block = 'Required. If none, type "none" or "n/a".'
+    
+    if (Object.keys(errors).length) {
+      return json_(200, { response_action: 'errors', errors })
+    }
+    
+    const now = new Date()
+    const submittedBefore615 = isBefore615(now, cfg.TZ) === true
+    
+    qPush_(cfg.FULL_ABSENCE_SUBMISSION_QUEUE_KEY, {
+      type: 'FULL_ABSENCE', // optional safety tag
+      submittedAtIso: now.toISOString(),
+      userId: payload?.user?.id || '',
+      username: payload?.user?.username || payload?.user?.name || '',
+      coverageValues: coverageValues || [],
+      hasSubPlans: hasSubPlans, // YES / NO
+      subPlansLocation: String(subPlansLocation || '').trim(),
+      submittedBefore615
+    }, 250, 60 * 30)
+    
+    return json_(200, { response_action: 'clear' })
+  }catch(err){
+        // IMPORTANT: do not debugLog_ here (sheets). Just clear.
+    try { Logger.log('handleFullAbsenceSubmitFast_ err=' + String(err && err.stack || err)) } catch (e) {}
+    return json_(200, { response_action: 'clear' })
   }
-
-  const now = new Date()
-  const submittedBefore615 = isBefore615(now, cfg.TZ) === true
-
-  qPush_(cfg.FULL_ABSENCE_SUBMISSION_QUEUE_KEY, {
-    submittedAtIso: now.toISOString(),
-    openedAtIso: meta.openedAtIso || '',
-    userId: payload.user?.id || '',
-    username: payload.user?.username || payload.user?.name || '',
-    coverageValues: coverageValues || [],
-    hasSubPlans: hasSubPlans, // YES / NO
-    subPlansLocation: String(subPlansLocation || '').trim(),
-    submittedBefore615
-  }, 250, 60 * 30)
-
-  debugLog_(cfg, 'FULL_SUBMIT', 'enqueued FULL_ABSENCE_SUBMISSION_QUEUE_KEY')
-  ensureFullAbsenceWorkers_(cfg)
-
-  return json_(200, { response_action: 'clear' })
 }
 
-
-/* ===========================
-   Ensure worker triggers exist (self-healing)
-   =========================== */
-
-function ensureFullAbsenceWorkers_(cfg) {
-  // You didn’t define these in getConfig_(), so we pin them here with stable prop keys.
-  // (These are ScriptProperties keys, not cfg keys.)
-  ensureWorkerTriggerOnce_('submissionWorker_', 'FLAG_FULL_SUBMISSION_WORKER_SET_V1', 1)
-  ensureWorkerTriggerOnce_('jobWorker_', 'FLAG_FULL_JOB_WORKER_SET_V1', 1)
-  ensureWorkerTriggerOnce_('debugWorker_', 'FLAG_DEBUG_WORKER_SET_V1', 1)
-}
 
 
 /* ===========================
@@ -85,6 +73,7 @@ function ensureFullAbsenceWorkers_(cfg) {
    =========================== */
 
 function submissionWorker_() {
+  if (isSlackHot_()) return
   const cfg = getConfig_()
 
   const batch = qShiftBatch_(cfg.FULL_ABSENCE_SUBMISSION_QUEUE_KEY, 50)
@@ -174,6 +163,7 @@ function submissionWorker_() {
    =========================== */
 
 function jobWorker_() {
+  if (isSlackHot_()) return
   const cfg = getConfig_()
 
   const jobs = qShiftBatch_(cfg.FULL_ABSENCE_JOB_QUEUE_KEY, 25)
